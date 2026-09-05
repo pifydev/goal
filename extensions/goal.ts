@@ -13,12 +13,25 @@
  * objective wrapping, blocked-recurrence discipline (code-yeongyu/pi-goal);
  * user-owns-intent principle (@capyup/pi-goal).
  */
-import type {
-  ExtensionAPI,
-  ExtensionContext,
+import {
+  DefaultResourceLoader,
+  SessionManager,
+  createAgentSession,
+  getAgentDir,
+  type AgentSession,
+  type ExtensionAPI,
+  type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import {
+  AUDIT_SYSTEM_PROMPT,
+  auditNote,
+  buildAuditPrompt,
+  parseAuditVerdict,
+  rejectionMessage,
+  type AuditVerdict,
+} from "../src/audit.ts";
 import { footerText, statusBlock } from "../src/format.ts";
 import {
   buildContinuationPrompt,
@@ -47,11 +60,16 @@ import type { Goal } from "../src/types.ts";
 import { TurnUsageTracker } from "../src/usage.ts";
 
 const CONTINUATION_TYPE = "goal-continuation";
+const GOAL_AUDIT = "goal-audit";
+const AUDIT_TOOLS = ["read", "grep", "find", "ls"];
+const AUDIT_TIMEOUT_MS = 180_000;
 
 type UiContext = ExtensionContext;
 
 export default function goalExtension(pi: ExtensionAPI) {
   let goal: Goal | null = null;
+  /** Opt-in: an audit costs a second model call per completion claim. */
+  let auditEnabled = false;
   let turnStartedAt: number | null = null;
   let agentAbortSignal: AbortSignal | undefined;
   const turnUsage = new TurnUsageTracker();
@@ -74,6 +92,66 @@ export default function goalExtension(pi: ExtensionAPI) {
     if (ctx.hasUI) ctx.ui.notify(message, level);
   }
 
+  /**
+   * Run the independent completion audit: a second agent, read-only tools,
+   * no goal extension of its own, checking the claim against the repository.
+   * Any failure to reach a verdict is inconclusive, never a rejection — a
+   * broken auditor must not be able to trap the agent.
+   */
+  async function runAudit(
+    ctx: UiContext,
+    objective: string,
+    summary: string,
+    evidence: string,
+    signal?: AbortSignal,
+  ): Promise<AuditVerdict> {
+    let session: AgentSession | null = null;
+    const timeout = AbortSignal.timeout(AUDIT_TIMEOUT_MS);
+    try {
+      const created = await createAgentSession({
+        sessionManager: SessionManager.inMemory(ctx.cwd),
+        model: ctx.model as never,
+        tools: AUDIT_TOOLS,
+        resourceLoader: new DefaultResourceLoader({
+          cwd: ctx.cwd,
+          agentDir: getAgentDir(),
+          // No extensions: the auditor must not inherit this goal, or any
+          // tool that could make its verdict true after the fact.
+          noExtensions: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          // The session's own system prompt is deliberately not inherited:
+          // the auditor answers to the audit instructions, nothing else.
+          appendSystemPrompt: [AUDIT_SYSTEM_PROMPT],
+        } as never),
+      });
+      session = created.session;
+      await session.prompt(buildAuditPrompt(objective, summary, evidence), {
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+      } as never);
+
+      const messages = session.messages as Array<{ role?: string; content?: Array<{ type?: string; text?: string }> }>;
+      const last = [...messages].reverse().find((m) => m.role === "assistant");
+      const text = (last?.content ?? [])
+        .filter((part) => part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("")
+        .trim();
+      return parseAuditVerdict(text);
+    } catch (err) {
+      return {
+        outcome: "inconclusive",
+        reason: `the audit could not run (${err instanceof Error ? err.message : String(err)})`,
+      };
+    } finally {
+      try {
+        session?.dispose();
+      } catch {
+        // disposal is best-effort
+      }
+    }
+  }
+
   /** Queue a hidden, model-visible prompt that triggers a turn when idle. */
   function queuePrompt(content: string): void {
     pi.sendMessage(
@@ -84,8 +162,21 @@ export default function goalExtension(pi: ExtensionAPI) {
 
   // ── Lifecycle events ─────────────────────────────────────────────────
 
+  /** Last audit-toggle entry on the branch wins (same shape as the goal snapshot). */
+  function replayAudit(entries: readonly unknown[]): boolean {
+    let enabled = false;
+    for (const entry of entries) {
+      const e = entry as { type?: string; customType?: string; data?: { enabled?: unknown } };
+      if (e.type === "custom" && e.customType === GOAL_AUDIT && typeof e.data?.enabled === "boolean") {
+        enabled = e.data.enabled;
+      }
+    }
+    return enabled;
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     goal = replayBranch(ctx.sessionManager.getBranch() as never);
+    auditEnabled = replayAudit(ctx.sessionManager.getBranch() as never);
     updateFooter(ctx);
     if (goal?.status === "active") {
       // Never auto-run on open (surprise token spend); the goal resumes
@@ -96,6 +187,7 @@ export default function goalExtension(pi: ExtensionAPI) {
 
   pi.on("session_tree", async (_event, ctx) => {
     goal = replayBranch(ctx.sessionManager.getBranch() as never);
+    auditEnabled = replayAudit(ctx.sessionManager.getBranch() as never);
     updateFooter(ctx);
   });
 
@@ -208,15 +300,34 @@ export default function goalExtension(pi: ExtensionAPI) {
       summary: Type.String({ description: "What was achieved, for the user" }),
       evidence: Type.String({ description: "Concrete evidence inspected during the completion audit" }),
     }),
-    async execute(_id, params: { summary: string; evidence: string }, _signal, _onUpdate, ctx) {
+    async execute(_id, params: { summary: string; evidence: string }, signal, _onUpdate, ctx) {
       const current = requireActiveGoal();
       if (!params.summary.trim() || !params.evidence.trim()) {
         throw new Error("goal_complete requires both a non-empty summary and non-empty evidence.");
       }
+
+      let note = "";
+      if (auditEnabled) {
+        notify(ctx as UiContext, "Auditing the completion claim…", "info");
+        const verdict = await runAudit(
+          ctx as UiContext,
+          current.objective,
+          params.summary.trim(),
+          params.evidence.trim(),
+          signal,
+        );
+        if (verdict.outcome === "fail") {
+          notify(ctx as UiContext, `Completion audit rejected the claim: ${verdict.reason}`, "warning");
+          // The goal stays active: a rejected claim is unfinished work.
+          throw new Error(rejectionMessage(verdict.reason));
+        }
+        note = auditNote(verdict);
+      }
+
       commit(ctx as UiContext, completeGoal(current, params.summary.trim(), Date.now()));
-      notify(ctx as UiContext, `🎯 Goal achieved\n${statusBlock(goal)}`, "info");
+      notify(ctx as UiContext, `🎯 Goal achieved\n${statusBlock(goal)}${note}`, "info");
       return {
-        content: [{ type: "text", text: "Goal marked complete. Report the result to the user." }],
+        content: [{ type: "text", text: `Goal marked complete. Report the result to the user.${note}` }],
         details: { goal },
       };
     },
@@ -268,7 +379,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   // ── Command ──────────────────────────────────────────────────────────
 
   pi.registerCommand("goal", {
-    description: "Pin a session goal: /goal <objective> | status | pause | resume | clear | budget <Nk|N.Nm|off>",
+    description: "Pin a session goal: /goal <objective> | status | pause | resume | clear | budget <Nk|N.Nm|off> | audit [on|off]",
     handler: async (args, ctx) => {
       const route = parseGoalRoute(args ?? "");
       switch (route.kind) {
@@ -306,6 +417,31 @@ export default function goalExtension(pi: ExtensionAPI) {
         }
         case "budget-invalid": {
           notify(ctx, "Usage: /goal budget <tokens|Nk|N.Nm|off> (min 1k), e.g. /goal budget 500k", "warning");
+          return;
+        }
+        case "audit": {
+          if (route.enabled === null) {
+            notify(
+              ctx,
+              [
+                `Completion audit: ${auditEnabled ? "on" : "off"}.`,
+                auditEnabled
+                  ? "Every goal_complete claim is re-checked by an independent read-only agent before it counts."
+                  : "Turn it on with /goal audit on — each completion claim then costs one extra model call.",
+              ].join("\n"),
+              "info",
+            );
+            return;
+          }
+          auditEnabled = route.enabled;
+          pi.appendEntry(GOAL_AUDIT, { enabled: auditEnabled });
+          notify(
+            ctx,
+            auditEnabled
+              ? "Completion audit ON — goal_complete claims are verified by an independent agent."
+              : "Completion audit OFF.",
+            "info",
+          );
           return;
         }
         case "budget": {

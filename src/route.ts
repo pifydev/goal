@@ -7,6 +7,7 @@ export type GoalRoute =
   | { kind: "clear" }
   | { kind: "budget"; budget: number | null }
   | { kind: "budget-invalid" }
+  | { kind: "audit"; enabled: boolean | null }
   | { kind: "set"; objective: string };
 
 const KEYWORDS: Record<string, GoalRoute["kind"]> = {
@@ -36,6 +37,16 @@ export function parseGoalRoute(raw: string): GoalRoute {
   const trimmed = raw.trim();
   const keyword = KEYWORDS[trimmed.toLowerCase()];
   if (keyword && keyword !== "set") return { kind: keyword } as GoalRoute;
+
+  // /goal audit → report; /goal audit on|off → set. Null means "just report".
+  const auditMatch = /^audit(?:\s+(\S+))?$/i.exec(trimmed);
+  if (auditMatch) {
+    const value = auditMatch[1]?.toLowerCase();
+    if (!value) return { kind: "audit", enabled: null };
+    if (value === "on" || value === "true") return { kind: "audit", enabled: true };
+    if (value === "off" || value === "false") return { kind: "audit", enabled: false };
+    return { kind: "audit", enabled: null };
+  }
 
   const budgetMatch = /^budget(?:\s+(\S+))?$/i.exec(trimmed);
   if (budgetMatch) {
