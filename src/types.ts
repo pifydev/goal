@@ -8,7 +8,7 @@ export const GOAL_STATUSES = ["active", "paused", "waiting", "blocked", "complet
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
 /** Why a goal ended up paused; decides resume semantics and footer text. */
-export type PauseCause = "user" | "turn-limit" | "no-progress" | "interrupt";
+export type PauseCause = "user" | "turn-limit" | "no-progress" | "interrupt" | "budget-limit";
 
 export interface TokenUsage {
   input: number;
@@ -23,6 +23,8 @@ export interface Goal {
   objective: string;
   status: GoalStatus;
   tokensUsed: number;
+  /** Optional hard token ceiling; continuation pauses when exceeded (v0.2). */
+  tokenBudget: number | null;
   timeUsedSeconds: number;
   /** Continuation turns since the last real user prompt (safety epoch). */
   automaticTurns: number;

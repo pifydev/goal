@@ -114,3 +114,23 @@ test("replayBranch: last snapshot wins; null clears; junk skipped", () => {
   ]);
   assert.equal(cleared, null);
 });
+
+test("v0.2 budget: setBudget + checkSafety trips at the ceiling", async () => {
+  const { setBudget } = await import("../src/state.ts");
+  let g = goal({ tokensUsed: 400_000 });
+  assert.equal(g.tokenBudget, null);
+  assert.deepEqual(checkSafety(g), { ok: true });
+
+  g = setBudget(g, 500_000, NOW);
+  assert.deepEqual(checkSafety(g), { ok: true });
+
+  g = accountUsage(g, { ...emptyUsage(), totalTokens: 150_000 }, 0, NOW);
+  const verdict = checkSafety(g);
+  assert.equal(verdict.ok, false);
+  if (!verdict.ok) {
+    assert.equal(verdict.cause, "budget-limit");
+    assert.ok(verdict.detail.includes("550000 of 500000"));
+  }
+
+  assert.equal(checkSafety(setBudget(g, null, NOW)).ok, true);
+});

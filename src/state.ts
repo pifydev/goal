@@ -18,6 +18,7 @@ export function createGoal(objective: string, now: number, id: string): Goal {
     objective,
     status: "active",
     tokensUsed: 0,
+    tokenBudget: null,
     timeUsedSeconds: 0,
     automaticTurns: 0,
     toolFreeRepeatCount: 0,
@@ -98,10 +99,22 @@ export function noteAutomaticTurn(goal: Goal): Goal {
 
 export type SafetyVerdict =
   | { ok: true }
-  | { ok: false; cause: Extract<PauseCause, "turn-limit" | "no-progress">; detail: string };
+  | { ok: false; cause: Extract<PauseCause, "turn-limit" | "no-progress" | "budget-limit">; detail: string };
+
+/** Set or clear the token budget on a goal. */
+export function setBudget(goal: Goal, budget: number | null, now: number): Goal {
+  return { ...goal, tokenBudget: budget, updatedAt: now };
+}
 
 /** Check the safety limits BEFORE queueing another automatic continuation. */
 export function checkSafety(goal: Goal): SafetyVerdict {
+  if (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget) {
+    return {
+      ok: false,
+      cause: "budget-limit",
+      detail: `token budget exhausted (${goal.tokensUsed} of ${goal.tokenBudget} tokens)`,
+    };
+  }
   if (goal.automaticTurns >= MAX_AUTOMATIC_TURNS) {
     return {
       ok: false,

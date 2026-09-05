@@ -33,6 +33,7 @@ import {
   accountUsage,
   blockGoal,
   checkSafety,
+  setBudget,
   completeGoal,
   createGoal,
   editObjective,
@@ -267,7 +268,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   // ── Command ──────────────────────────────────────────────────────────
 
   pi.registerCommand("goal", {
-    description: "Pin a session goal: /goal <objective> | status | pause | resume | clear",
+    description: "Pin a session goal: /goal <objective> | status | pause | resume | clear | budget <Nk|N.Nm|off>",
     handler: async (args, ctx) => {
       const route = parseGoalRoute(args ?? "");
       switch (route.kind) {
@@ -301,6 +302,25 @@ export default function goalExtension(pi: ExtensionAPI) {
           commit(ctx, resumeGoal(goal, Date.now()));
           notify(ctx, "Goal resumed.", "info");
           queuePrompt(buildResumePrompt(goal!, previous));
+          return;
+        }
+        case "budget-invalid": {
+          notify(ctx, "Usage: /goal budget <tokens|Nk|N.Nm|off> (min 1k), e.g. /goal budget 500k", "warning");
+          return;
+        }
+        case "budget": {
+          if (!goal || goal.status === "complete") {
+            notify(ctx, "No active goal. Start one first with /goal <objective>.", "warning");
+            return;
+          }
+          commit(ctx, setBudget(goal, route.budget, Date.now()));
+          notify(
+            ctx,
+            route.budget === null
+              ? "Goal budget cleared."
+              : `Goal budget set: ${route.budget} tokens (${goal!.tokensUsed} used so far).`,
+            "info",
+          );
           return;
         }
         case "clear": {

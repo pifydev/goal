@@ -41,6 +41,8 @@ function pauseCauseLabel(goal: Goal): string {
   switch (goal.pauseCause) {
     case "turn-limit":
       return "turn limit reached";
+    case "budget-limit":
+      return "token budget exhausted";
     case "no-progress":
       return "no progress detected";
     case "interrupt":
@@ -56,7 +58,7 @@ export function statusBlock(goal: Goal | null): string {
   const lines = [
     `Objective: ${goal.objective}`,
     `Status: ${goal.status}${goal.pauseCause ? ` (${pauseCauseLabel(goal)})` : ""}`,
-    `Usage: ${formatTokenCount(goal.tokensUsed)} tokens · ${formatElapsedSeconds(goal.timeUsedSeconds)}`,
+    `Usage: ${formatTokenCount(goal.tokensUsed)} tokens` + (goal.tokenBudget !== null ? ` / ${formatTokenCount(goal.tokenBudget)} budget` : "") + ` · ${formatElapsedSeconds(goal.timeUsedSeconds)}`,
   ];
   if (goal.blockedReason) lines.push(`Blocked: ${goal.blockedReason}`);
   if (goal.waitingReason) lines.push(`Waiting: ${goal.waitingReason}`);

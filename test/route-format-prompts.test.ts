@@ -93,3 +93,26 @@ test("continuation prompt carries the completion audit and stale guard", () => {
   assert.ok(prompt.includes("goal_wait"));
   assert.ok(prompt.includes("paused, cleared, or replaced"));
 });
+
+test("v0.2 budget route parsing", async () => {
+  const { parseBudgetValue } = await import("../src/route.ts");
+  assert.equal(parseBudgetValue("500k"), 500_000);
+  assert.equal(parseBudgetValue("1.5m"), 1_500_000);
+  assert.equal(parseBudgetValue("250000"), 250_000);
+  assert.equal(parseBudgetValue("off"), null);
+  assert.equal(parseBudgetValue("500"), undefined); // below 1k floor
+  assert.equal(parseBudgetValue("lots"), undefined);
+
+  assert.deepEqual(parseGoalRoute("budget 500k"), { kind: "budget", budget: 500_000 });
+  assert.deepEqual(parseGoalRoute("budget off"), { kind: "budget", budget: null });
+  assert.deepEqual(parseGoalRoute("budget"), { kind: "budget-invalid" });
+  assert.deepEqual(parseGoalRoute("budget nonsense"), { kind: "budget-invalid" });
+  // an objective that merely starts with "budget..." is still an objective
+  assert.equal(parseGoalRoute("budget planning for the quarter").kind, "set");
+});
+
+test("v0.2 statusBlock shows the budget when set", async () => {
+  const { setBudget } = await import("../src/state.ts");
+  const g = setBudget(createGoal("obj", 0, "g"), 500_000, 0);
+  assert.ok(statusBlock({ ...g, tokensUsed: 120_000 }).includes("120.0k tokens / 500.0k budget"));
+});
