@@ -40,6 +40,13 @@ import {
   buildResumePrompt,
 } from "../src/prompts.ts";
 import { parseGoalRoute } from "../src/route.ts";
+import {
+  allDone as allStepsDone,
+  completeCurrentStep,
+  currentStep,
+  formatSteps,
+  progressLine,
+} from "../src/steps.ts";
 import { noteTurnProgress } from "../src/safety.ts";
 import {
   GOAL_STATE,
@@ -52,6 +59,7 @@ import {
   editObjective,
   noteAutomaticTurn,
   pauseGoal,
+  setSteps,
   replayBranch,
   resumeGoal,
   waitGoal,
@@ -305,6 +313,15 @@ export default function goalExtension(pi: ExtensionAPI) {
       if (!params.summary.trim() || !params.evidence.trim()) {
         throw new Error("goal_complete requires both a non-empty summary and non-empty evidence.");
       }
+      // Sisyphus discipline: an ordered goal is finished when its list is,
+      // not when the agent feels done with the interesting part.
+      if (current.steps.length > 0 && !allStepsDone(current.steps)) {
+        const next = currentStep(current.steps);
+        throw new Error(
+          `This goal is an ordered list and ${progressLine(current.steps)} are done. ` +
+            `Finish the current step first — "${next!.text}" — and mark it with goal_step_done.`,
+        );
+      }
 
       let note = "";
       if (auditEnabled) {
@@ -329,6 +346,40 @@ export default function goalExtension(pi: ExtensionAPI) {
       return {
         content: [{ type: "text", text: `Goal marked complete. Report the result to the user.${note}` }],
         details: { goal },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "goal_step_done",
+    label: "Finish goal step",
+    description:
+      "Mark the CURRENT step of an ordered goal finished and receive the next one. Requires evidence: " +
+      "what you actually verified for this step (command output, file state, test results). Steps advance " +
+      "one at a time and only forward — you cannot choose which step to complete.",
+    parameters: Type.Object({
+      evidence: Type.String({ description: "What you verified for this step" }),
+    }),
+    async execute(_id, params: { evidence: string }, _signal, _onUpdate, ctx) {
+      const current = requireActiveGoal();
+      if (current.steps.length === 0) {
+        throw new Error("This goal has no step list — report progress with goal_complete when it is achieved.");
+      }
+      const result = completeCurrentStep(current.steps, params.evidence ?? "", Date.now());
+      if (result.error) throw new Error(result.error);
+
+      commit(ctx as UiContext, setSteps(current, result.steps, Date.now()));
+      notify(ctx as UiContext, `Step done (${progressLine(result.steps)}): ${result.completed!.text}`, "info");
+      return {
+        content: [
+          {
+            type: "text",
+            text: result.next
+              ? `Step ${result.steps.indexOf(result.completed!) + 1} done — ${progressLine(result.steps)}.\nNext step: ${result.next.text}`
+              : `Every step is done (${progressLine(result.steps)}). Run the completion audit over the objective as a whole, then call goal_complete.`,
+          },
+        ],
+        details: { steps: result.steps, next: result.next },
       };
     },
   });
@@ -379,7 +430,7 @@ export default function goalExtension(pi: ExtensionAPI) {
   // ── Command ──────────────────────────────────────────────────────────
 
   pi.registerCommand("goal", {
-    description: "Pin a session goal: /goal <objective> | status | pause | resume | clear | budget <Nk|N.Nm|off> | audit [on|off]",
+    description: "Pin a session goal: /goal <objective> | status | steps | pause | resume | clear | budget <Nk|N.Nm|off> | audit [on|off]",
     handler: async (args, ctx) => {
       const route = parseGoalRoute(args ?? "");
       switch (route.kind) {
@@ -417,6 +468,20 @@ export default function goalExtension(pi: ExtensionAPI) {
         }
         case "budget-invalid": {
           notify(ctx, "Usage: /goal budget <tokens|Nk|N.Nm|off> (min 1k), e.g. /goal budget 500k", "warning");
+          return;
+        }
+        case "steps": {
+          if (!goal) {
+            notify(ctx, "No goal set. Start one with /goal <objective>.", "warning");
+            return;
+          }
+          notify(
+            ctx,
+            goal.steps.length === 0
+              ? "This goal has no step list. Write the objective as a list (one step per line, or separated by ';') to work it in order."
+              : formatSteps(goal.steps),
+            "info",
+          );
           return;
         }
         case "audit": {

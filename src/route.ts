@@ -8,6 +8,7 @@ export type GoalRoute =
   | { kind: "budget"; budget: number | null }
   | { kind: "budget-invalid" }
   | { kind: "audit"; enabled: boolean | null }
+  | { kind: "steps" }
   | { kind: "set"; objective: string };
 
 const KEYWORDS: Record<string, GoalRoute["kind"]> = {
@@ -16,6 +17,7 @@ const KEYWORDS: Record<string, GoalRoute["kind"]> = {
   pause: "pause",
   resume: "resume",
   clear: "clear",
+  steps: "steps",
   stop: "pause",
 };
 

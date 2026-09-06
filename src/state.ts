@@ -1,3 +1,4 @@
+import { parseSteps, type GoalStep } from "./steps.ts";
 import {
   MAX_AUTOMATIC_TURNS,
   NO_PROGRESS_LIMIT,
@@ -19,6 +20,7 @@ export function createGoal(objective: string, now: number, id: string): Goal {
     status: "active",
     tokensUsed: 0,
     tokenBudget: null,
+    steps: parseSteps(objective),
     timeUsedSeconds: 0,
     automaticTurns: 0,
     toolFreeRepeatCount: 0,
@@ -33,6 +35,9 @@ export function editObjective(goal: Goal, objective: string, now: number): Goal 
   return {
     ...resetSafetyEpoch(goal),
     objective,
+    // A replaced objective replaces its plan: keeping half-ticked steps from
+    // the old one would drive the agent through work nobody asked for again.
+    steps: parseSteps(objective),
     status: "active",
     pauseCause: undefined,
     blockedReason: undefined,
@@ -147,8 +152,16 @@ export function replayBranch(entries: BranchEntryLike[]): Goal | null {
       continue;
     }
     if (isRecord(data) && typeof data.id === "string" && typeof data.objective === "string") {
-      goal = data as unknown as Goal;
+      // Snapshots written before v0.4 have no steps array; every read of
+      // goal.steps assumes one, so fill it in rather than crash on replay.
+      const restored = data as unknown as Goal;
+      goal = Array.isArray(restored.steps) ? restored : { ...restored, steps: [] };
     }
   }
   return goal;
+}
+
+/** Record a finished step on the goal (Sisyphus mode, v0.4). */
+export function setSteps(goal: Goal, steps: GoalStep[], now: number): Goal {
+  return { ...goal, steps, updatedAt: now };
 }

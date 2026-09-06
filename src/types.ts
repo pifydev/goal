@@ -18,6 +18,8 @@ export interface TokenUsage {
   totalTokens: number;
 }
 
+import type { GoalStep } from "./steps.ts";
+
 export interface Goal {
   id: string;
   objective: string;
@@ -25,6 +27,8 @@ export interface Goal {
   tokensUsed: number;
   /** Optional hard token ceiling; continuation pauses when exceeded (v0.2). */
   tokenBudget: number | null;
+  /** Ordered steps, when the objective was written as a list (v0.4). */
+  steps: GoalStep[];
   timeUsedSeconds: number;
   /** Continuation turns since the last real user prompt (safety epoch). */
   automaticTurns: number;

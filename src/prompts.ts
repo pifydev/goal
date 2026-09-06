@@ -1,4 +1,5 @@
 import { formatElapsedSeconds, formatTokenCount } from "./format.ts";
+import { currentStepIndex, progressLine } from "./steps.ts";
 import type { Goal } from "./types.ts";
 
 /**
@@ -43,17 +44,51 @@ const COMPLETION_AUDIT = [
   "Never call goal_complete merely because you are stopping work.",
 ].join("\n");
 
+/**
+ * Names the one step to work on now. The objective block already carries the
+ * whole list — that is the user's own text — so what this adds is the cursor:
+ * without it a list reads as a menu the agent may order from, starting with
+ * the part it finds most interesting.
+ */
+function stepBlock(goal: Goal): string | null {
+  if (goal.steps.length === 0) return null;
+  const index = currentStepIndex(goal.steps);
+  if (index === -1) {
+    return [
+      `All ${goal.steps.length} steps are marked done (${progressLine(goal.steps)}).`,
+      "Run the completion audit over the objective as a whole, then call goal_complete with the evidence.",
+    ].join("\n");
+  }
+  const done = goal.steps
+    .filter((s) => s.done)
+    .map((s, i) => `  ${i + 1}. ${escapeXmlText(s.text)}`)
+    .join("\n");
+  return [
+    `This goal is an ordered list — ${progressLine(goal.steps)}. Work ONLY on the current step:`,
+    "",
+    `<current_step index="${index + 1}">`,
+    escapeXmlText(goal.steps[index]!.text),
+    "</current_step>",
+    ...(done ? ["", "Already done:", done] : []),
+    "",
+    "When the current step is verifiably finished, call goal_step_done with the evidence you checked;",
+    "it will hand you the next step. Do not skip ahead, and do not call goal_complete until every step is done.",
+  ].join("\n");
+}
+
 const STALE_GUARD =
   "If the user has paused, cleared, or replaced the goal since this message was queued, stop immediately and do nothing.";
 
 /** First prompt right after /goal <objective> creates the goal. */
 export function buildInitialPrompt(goal: Goal): string {
+  const steps = stepBlock(goal);
   return [
     "Goal mode is active. Work toward this goal until it is complete:",
     "",
     objectiveBlock(goal),
+    ...(steps ? ["", steps] : []),
     "",
-    "Choose the next concrete action and begin. " + COMPLETION_AUDIT,
+    steps ? "Begin the current step." : "Choose the next concrete action and begin. " + COMPLETION_AUDIT,
   ].join("\n");
 }
 
@@ -63,6 +98,7 @@ export function buildContinuationPrompt(goal: Goal): string {
     "Continue working toward the active goal.",
     "",
     objectiveBlock(goal),
+    ...(stepBlock(goal) ? ["", stepBlock(goal)!] : []),
     "",
     usageLine(goal),
     "",
