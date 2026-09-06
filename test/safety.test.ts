@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  classifyUnrecoverable,
+  turnErrorMessage,
   fingerprintVisibleAssistantOutput,
   hasAssistantToolCall,
   normalizeVisibleAssistantOutput,
@@ -55,4 +57,50 @@ test("noteTurnProgress: identical tool-free output increments; new output resets
   assert.equal(g.toolFreeRepeatCount, 3);
   g = noteTurnProgress(g, [assistant("different now")]);
   assert.equal(g.toolFreeRepeatCount, 1);
+});
+
+test("v0.5 errors the user must fix are separated from ones worth retrying", () => {
+  // repeating these would fail identically every time, forever
+  assert.equal(classifyUnrecoverable("401 Unauthorized"), "authentication");
+  assert.equal(classifyUnrecoverable("Incorrect API key provided: sk-xxx"), "authentication");
+  assert.equal(classifyUnrecoverable("403 Forbidden"), "authentication");
+  assert.equal(classifyUnrecoverable("Insufficient credits to run this request"), "credits");
+  assert.equal(classifyUnrecoverable("402 Payment Required"), "credits");
+  assert.equal(classifyUnrecoverable("prompt is too long: 210000 tokens"), "context overflow");
+  assert.equal(classifyUnrecoverable("maximum context length exceeded"), "context overflow");
+  assert.equal(classifyUnrecoverable("model gpt-9 does not exist"), "model unavailable");
+
+  // a retry loop is exactly what these want
+  assert.equal(classifyUnrecoverable("429 rate limit exceeded"), null);
+  assert.equal(classifyUnrecoverable("Overloaded"), null);
+  assert.equal(classifyUnrecoverable("socket hang up"), null);
+  assert.equal(classifyUnrecoverable("ETIMEDOUT"), null);
+  assert.equal(classifyUnrecoverable("500 Internal Server Error"), null);
+  assert.equal(classifyUnrecoverable(""), null);
+});
+
+test("v0.5 turnErrorMessage reads the failure off the turn", () => {
+  assert.equal(
+    turnErrorMessage([
+      { role: "user", content: "go" },
+      { role: "assistant", stopReason: "error", errorMessage: "401 Unauthorized" },
+    ]),
+    "401 Unauthorized",
+  );
+  // the newest assistant error wins
+  assert.equal(
+    turnErrorMessage([
+      { role: "assistant", stopReason: "error", errorMessage: "first" },
+      { role: "assistant", stopReason: "error", errorMessage: "second" },
+    ]),
+    "second",
+  );
+  assert.equal(turnErrorMessage([{ role: "assistant", stopReason: "endTurn" }]), "");
+  assert.equal(turnErrorMessage([]), "");
+  assert.equal(turnErrorMessage([null, "junk", 42]), "");
+  assert.equal(
+    turnErrorMessage([{ role: "assistant", stopReason: "error" }]),
+    "unknown error",
+    "an error with no text still reports as one",
+  );
 });

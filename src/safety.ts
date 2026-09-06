@@ -57,3 +57,54 @@ export function noteTurnProgress(goal: Goal, messages: readonly unknown[]): Goal
     lastFingerprint: fingerprint,
   };
 }
+
+/**
+ * Errors a goal must stop on, versus errors it should ride out.
+ *
+ * A goal drives turns by itself, so an error the user has to fix turns into
+ * an unattended retry loop: an expired key, an empty balance, or a model the
+ * account cannot reach will fail identically on every continuation, forever,
+ * and each attempt still costs a request. Transient failures — a rate limit,
+ * an overloaded provider, a dropped connection — are exactly what a retry
+ * loop is for, so they deliberately match nothing here.
+ *
+ * (The classification is from ilovepixelart/pi-code's /goal.)
+ */
+export type UnrecoverableKind =
+  | "authentication"
+  | "credits"
+  | "context overflow"
+  | "model unavailable";
+
+const UNRECOVERABLE: ReadonlyArray<[UnrecoverableKind, RegExp]> = [
+  [
+    // "Incorrect API key provided: sk-…" is what OpenAI actually returns.
+    "authentication",
+    /\b40[13]\b|unauthori[sz]ed|authentication|(?:invalid|incorrect|expired|missing)\s+(?:api[ -]?)?key|x-api-key/i,
+  ],
+  ["credits", /\bcredits?\b|billing|insufficient[ _](?:funds|balance|quota)|payment required|\b402\b/i],
+  [
+    "context overflow",
+    /context (?:window|length)|too (?:long|many tokens)|maximum (?:context|input) (?:length|tokens)/i,
+  ],
+  [
+    "model unavailable",
+    /model.*(?:not found|unavailable|does not exist|not available|unsupported)|no such model|not_found_error/i,
+  ],
+];
+
+export function classifyUnrecoverable(message: string): UnrecoverableKind | null {
+  if (!message) return null;
+  return UNRECOVERABLE.find(([, pattern]) => pattern.test(message))?.[0] ?? null;
+}
+
+/** The error text carried by a turn's messages, if any. */
+export function turnErrorMessage(messages: readonly unknown[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: string; stopReason?: string; errorMessage?: unknown } | null;
+    if (!message || message.role !== "assistant") continue;
+    if (message.stopReason !== "error") continue;
+    return typeof message.errorMessage === "string" ? message.errorMessage : "unknown error";
+  }
+  return "";
+}

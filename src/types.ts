@@ -8,7 +8,14 @@ export const GOAL_STATUSES = ["active", "paused", "waiting", "blocked", "complet
 export type GoalStatus = (typeof GOAL_STATUSES)[number];
 
 /** Why a goal ended up paused; decides resume semantics and footer text. */
-export type PauseCause = "user" | "turn-limit" | "no-progress" | "interrupt" | "budget-limit";
+/** "error" (v0.5): a failure that repeating the turn cannot fix. */
+export type PauseCause =
+  | "user"
+  | "turn-limit"
+  | "no-progress"
+  | "interrupt"
+  | "budget-limit"
+  | "error";
 
 export interface TokenUsage {
   input: number;

@@ -47,7 +47,7 @@ import {
   formatSteps,
   progressLine,
 } from "../src/steps.ts";
-import { noteTurnProgress } from "../src/safety.ts";
+import { classifyUnrecoverable, noteTurnProgress, turnErrorMessage } from "../src/safety.ts";
 import {
   GOAL_STATE,
   accountUsage,
@@ -236,6 +236,20 @@ export default function goalExtension(pi: ExtensionAPI) {
     }
 
     if (goal.status === "active") {
+      // An error the user has to fix would otherwise be retried on every
+      // continuation, forever, at the cost of a request each time.
+      const failure = turnErrorMessage(event.messages as readonly unknown[]);
+      const kind = classifyUnrecoverable(failure);
+      if (kind) {
+        commit(ctx, pauseGoal(goal, "error", Date.now()));
+        notify(
+          ctx,
+          `Goal paused — ${kind}. Continuing would repeat the same failure. Fix it, then /goal resume.
+${failure.slice(0, 200)}`,
+          "error",
+        );
+        return;
+      }
       if (aborted) {
         // Esc during a goal turn = the user wants control back. Pause, do not
         // continue. (The published API cannot distinguish abort sources; a

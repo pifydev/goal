@@ -47,6 +47,8 @@ function pauseCauseLabel(goal: Goal): string {
       return "no progress detected";
     case "interrupt":
       return "interrupted";
+    case "error":
+      return "unrecoverable error";
     default:
       return "paused";
   }
