@@ -25,6 +25,13 @@ waiting, or a safety limit trips.
   deliverables, map each requirement to concrete evidence you inspected this
   turn (files, command output, test results), and include that evidence.
   Passing tests or effort spent are not completion by themselves.
+- A non-zero exit can never be described as success. A goal turn that ends
+  with a failing command has not advanced the goal, and reporting it as
+  progress spends the next turn building on something that is not there.
+- When repair stops converging, say so. Keep going while each round reduces
+  the number of failures; if two consecutive rounds do not beat the best
+  count so far, stop and report the remaining failures truthfully rather
+  than trying a fourth variation of the same fix.
 - `goal_blocked` only after the SAME blocker recurred 3+ consecutive turns.
 - `goal_wait` when progress depends on an external event (CI, human review).
 - Safety limits pause the goal automatically after 20 automatic turns or 3
