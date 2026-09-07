@@ -1,5 +1,7 @@
 import { parseSteps, type GoalStep } from "./steps.ts";
+import { billableTokens } from "./usage.ts";
 import {
+  BUDGET_WARN_RATIO,
   MAX_AUTOMATIC_TURNS,
   NO_PROGRESS_LIMIT,
   isRecord,
@@ -19,6 +21,8 @@ export function createGoal(objective: string, now: number, id: string): Goal {
     objective,
     status: "active",
     tokensUsed: 0,
+    budgetTokensUsed: 0,
+    budgetWarned: false,
     tokenBudget: null,
     steps: parseSteps(objective),
     timeUsedSeconds: 0,
@@ -83,9 +87,30 @@ export function accountUsage(goal: Goal, usage: TokenUsage, elapsedSeconds: numb
   return {
     ...goal,
     tokensUsed: goal.tokensUsed + Math.max(0, usage.totalTokens),
+    budgetTokensUsed: goal.budgetTokensUsed + billableTokens(usage),
     timeUsedSeconds: goal.timeUsedSeconds + Math.max(0, elapsedSeconds),
     updatedAt: now,
   };
+}
+
+/** Fraction of the budget spent, or null when no budget is set. */
+export function budgetRatio(goal: Goal): number | null {
+  if (goal.tokenBudget === null || goal.tokenBudget <= 0) return null;
+  return goal.budgetTokensUsed / goal.tokenBudget;
+}
+
+export function noteBudgetWarned(goal: Goal): Goal {
+  return { ...goal, budgetWarned: true };
+}
+
+/**
+ * True when this turn should be the one that tells the agent to wrap up.
+ * Fires once, at 90% — late enough that most goals never see it, early enough
+ * that there is room to leave the work somewhere a person can pick it up.
+ */
+export function needsBudgetWarning(goal: Goal): boolean {
+  const ratio = budgetRatio(goal);
+  return ratio !== null && ratio >= BUDGET_WARN_RATIO && !goal.budgetWarned;
 }
 
 /** A real user prompt starts a fresh safety epoch. */
@@ -113,11 +138,16 @@ export function setBudget(goal: Goal, budget: number | null, now: number): Goal 
 
 /** Check the safety limits BEFORE queueing another automatic continuation. */
 export function checkSafety(goal: Goal): SafetyVerdict {
-  if (goal.tokenBudget !== null && goal.tokensUsed >= goal.tokenBudget) {
+  // The budget only ends the loop after the agent has been told it is nearly
+  // gone. Cutting a run off at the ceiling with no warning leaves the work in
+  // whatever state the last turn happened to reach; one wrap-up turn is the
+  // difference between "stopped" and "stopped somewhere usable".
+  const ratio = budgetRatio(goal);
+  if (ratio !== null && ratio >= 1 && goal.budgetWarned) {
     return {
       ok: false,
       cause: "budget-limit",
-      detail: `token budget exhausted (${goal.tokensUsed} of ${goal.tokenBudget} tokens)`,
+      detail: `token budget exhausted (${goal.budgetTokensUsed} of ${goal.tokenBudget} billable tokens)`,
     };
   }
   if (goal.automaticTurns >= MAX_AUTOMATIC_TURNS) {
@@ -155,7 +185,16 @@ export function replayBranch(entries: BranchEntryLike[]): Goal | null {
       // Snapshots written before v0.4 have no steps array; every read of
       // goal.steps assumes one, so fill it in rather than crash on replay.
       const restored = data as unknown as Goal;
-      goal = Array.isArray(restored.steps) ? restored : { ...restored, steps: [] };
+      goal = {
+        ...restored,
+        steps: Array.isArray(restored.steps) ? restored.steps : [],
+        // Snapshots written before v0.6 metered the budget with every token
+        // the provider reported. Carrying that number over keeps their meter
+        // where it was rather than silently handing them a fresh allowance.
+        budgetTokensUsed:
+          typeof restored.budgetTokensUsed === "number" ? restored.budgetTokensUsed : restored.tokensUsed,
+        budgetWarned: restored.budgetWarned === true,
+      };
     }
   }
   return goal;

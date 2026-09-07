@@ -60,7 +60,14 @@ export function statusBlock(goal: Goal | null): string {
   const lines = [
     `Objective: ${goal.objective}`,
     `Status: ${goal.status}${goal.pauseCause ? ` (${pauseCauseLabel(goal)})` : ""}`,
-    `Usage: ${formatTokenCount(goal.tokensUsed)} tokens` + (goal.tokenBudget !== null ? ` / ${formatTokenCount(goal.tokenBudget)} budget` : "") + ` · ${formatElapsedSeconds(goal.timeUsedSeconds)}`,
+    // The budget counts what each turn added; cached re-reads are shown so the
+    // two numbers never look like one of them is wrong.
+    `Usage: ${formatTokenCount(goal.budgetTokensUsed)} tokens` +
+      (goal.tokenBudget !== null ? ` / ${formatTokenCount(goal.tokenBudget)} budget` : "") +
+      (goal.tokensUsed > goal.budgetTokensUsed
+        ? ` (+${formatTokenCount(goal.tokensUsed - goal.budgetTokensUsed)} cached)`
+        : "") +
+      ` · ${formatElapsedSeconds(goal.timeUsedSeconds)}`,
   ];
   if (goal.blockedReason) lines.push(`Blocked: ${goal.blockedReason}`);
   if (goal.waitingReason) lines.push(`Waiting: ${goal.waitingReason}`);

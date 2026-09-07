@@ -111,8 +111,13 @@ test("v0.2 budget route parsing", async () => {
   assert.equal(parseGoalRoute("budget planning for the quarter").kind, "set");
 });
 
-test("v0.2 statusBlock shows the budget when set", async () => {
+test("statusBlock shows the budget against what the turns actually added", async () => {
   const { setBudget } = await import("../src/state.ts");
   const g = setBudget(createGoal("obj", 0, "g"), 500_000, 0);
-  assert.ok(statusBlock({ ...g, tokensUsed: 120_000 }).includes("120.0k tokens / 500.0k budget"));
+  const line = statusBlock({ ...g, tokensUsed: 900_000, budgetTokensUsed: 120_000 });
+  assert.ok(line.includes("120.0k tokens / 500.0k budget"));
+  // The cached re-reads are shown too, so the two numbers never look like a bug.
+  assert.ok(line.includes("(+780.0k cached)"));
+  // With no cache in play there is no second number to explain.
+  assert.ok(!statusBlock({ ...g, tokensUsed: 120_000, budgetTokensUsed: 120_000 }).includes("cached"));
 });

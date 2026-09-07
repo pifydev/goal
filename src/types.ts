@@ -31,7 +31,12 @@ export interface Goal {
   id: string;
   objective: string;
   status: GoalStatus;
+  /** Every token the provider reported, cached reads included — display only. */
   tokensUsed: number;
+  /** What the budget is measured against; see billableTokens in usage.ts. */
+  budgetTokensUsed: number;
+  /** True once the agent has been told to wrap up because the budget is nearly gone. */
+  budgetWarned: boolean;
   /** Optional hard token ceiling; continuation pauses when exceeded (v0.2). */
   tokenBudget: number | null;
   /** Ordered steps, when the objective was written as a list (v0.4). */
@@ -53,6 +58,9 @@ export interface Goal {
 }
 
 /** Safety limits. Continuation stops and pauses the goal when either trips. */
+/** Where the budget stops being a number and starts being a deadline. */
+export const BUDGET_WARN_RATIO = 0.9;
+
 export const MAX_AUTOMATIC_TURNS = 20;
 export const NO_PROGRESS_LIMIT = 3;
 

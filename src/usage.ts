@@ -12,6 +12,29 @@ export function emptyUsage(): TokenUsage {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 };
 }
 
+/**
+ * What a token budget should actually measure.
+ *
+ * pi reports `totalTokens = input + output + cacheRead + cacheWrite`, and a
+ * goal loop re-reads its whole cached prefix on every single turn. Counting
+ * cached reads therefore measures the conversation's length multiplied by the
+ * number of turns, not the work done: a 30k-token context burns "500k tokens"
+ * in about fifteen turns while the provider charges roughly a tenth of that.
+ * A budget that behaves like a turn limit and calls itself a token limit is
+ * worse than no budget, because the number the user typed means nothing.
+ *
+ * So the meter counts what a turn genuinely adds — new input, cache writes,
+ * and output. Cached reads are still reported to the user, just not charged
+ * against the ceiling they set.
+ */
+export function billableTokens(usage: TokenUsage): number {
+  const billable = usage.input + usage.output + usage.cacheWrite;
+  // Providers that report only a total (no breakdown) still have to count for
+  // something, or their budgets would never move.
+  if (billable === 0 && usage.cacheRead === 0) return Math.max(0, usage.totalTokens);
+  return Math.max(0, billable);
+}
+
 export function collectAssistantUsage(messages: readonly unknown[]): TokenUsage {
   const usage = emptyUsage();
   for (const message of messages) addAssistantMessageUsage(usage, message);

@@ -27,8 +27,25 @@ function objectiveBlock(goal: Goal): string {
 }
 
 function usageLine(goal: Goal): string {
-  return `Usage so far: ${formatTokenCount(goal.tokensUsed)} tokens · ${formatElapsedSeconds(goal.timeUsedSeconds)}.`;
+  const cached = goal.tokensUsed - goal.budgetTokensUsed;
+  const counted = `${formatTokenCount(goal.budgetTokensUsed)} tokens`;
+  const budget = goal.tokenBudget !== null ? ` of a ${formatTokenCount(goal.tokenBudget)} budget` : "";
+  const cachedNote = cached > 0 ? ` (plus ${formatTokenCount(cached)} read from cache)` : "";
+  return `Usage so far: ${counted}${budget}${cachedNote} · ${formatElapsedSeconds(goal.timeUsedSeconds)}.`;
 }
+
+/**
+ * The one turn between "nearly out of budget" and "stopped". Its job is not
+ * to squeeze in more work — it is to make sure that whatever state the loop
+ * is about to be frozen in is a state someone can pick up.
+ */
+export const BUDGET_WRAP_UP = [
+  "The token budget for this goal is nearly spent, and the loop will stop when it runs out.",
+  "Use this turn to leave the work somewhere a person can pick it up:",
+  "- Finish or cleanly back out of whatever is half-done; do not start anything new.",
+  "- Say plainly what is done, what is not, and what the next step would be.",
+  "Do not report the goal complete because the budget ran out — an unfinished goal that says so is more useful than a false completion.",
+].join("\n");
 
 const COMPLETION_AUDIT = [
   "Before deciding that the goal is achieved, perform a completion audit against the actual current state:",
@@ -37,6 +54,8 @@ const COMPLETION_AUDIT = [
   "- Inspect the relevant files, command output, or test results for each item — do not rely on memory of earlier work.",
   "- Do not accept proxy signals (passing tests, effort spent, a plausible answer) as completion unless they cover every requirement.",
   "- Treat uncertainty as not achieved; verify more or keep working.",
+  "- Do not redefine success around the work already done, and do not substitute a narrower or safer",
+  "  deliverable because it is easier to verify. The objective set the bar; the audit checks against it.",
   "",
   "Only call goal_complete when the audit shows the objective is actually achieved — include the evidence you inspected.",
   "Call goal_blocked only after the SAME blocking condition has recurred for at least 3 consecutive goal turns, with the reason.",
@@ -93,7 +112,7 @@ export function buildInitialPrompt(goal: Goal): string {
 }
 
 /** Queued at every settled idle boundary while the goal stays active. */
-export function buildContinuationPrompt(goal: Goal): string {
+export function buildContinuationPrompt(goal: Goal, wrapUp = false): string {
   return [
     "Continue working toward the active goal.",
     "",
@@ -101,6 +120,7 @@ export function buildContinuationPrompt(goal: Goal): string {
     ...(stepBlock(goal) ? ["", stepBlock(goal)!] : []),
     "",
     usageLine(goal),
+    ...(wrapUp ? ["", BUDGET_WRAP_UP] : []),
     "",
     "Avoid repeating work that is already done. Choose the next concrete action toward the objective.",
     "",

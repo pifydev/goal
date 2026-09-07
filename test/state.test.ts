@@ -115,22 +115,64 @@ test("replayBranch: last snapshot wins; null clears; junk skipped", () => {
   assert.equal(cleared, null);
 });
 
-test("v0.2 budget: setBudget + checkSafety trips at the ceiling", async () => {
-  const { setBudget } = await import("../src/state.ts");
-  let g = goal({ tokensUsed: 400_000 });
+test("the budget warns once, then stops on the next turn past the ceiling", async () => {
+  const { setBudget, needsBudgetWarning, noteBudgetWarned } = await import("../src/state.ts");
+  let g = goal({ tokensUsed: 400_000, budgetTokensUsed: 400_000 });
   assert.equal(g.tokenBudget, null);
   assert.deepEqual(checkSafety(g), { ok: true });
+  assert.equal(needsBudgetWarning(g), false, "no budget, nothing to warn about");
 
   g = setBudget(g, 500_000, NOW);
   assert.deepEqual(checkSafety(g), { ok: true });
+  // 80% is not yet the deadline.
+  assert.equal(needsBudgetWarning(g), false);
 
-  g = accountUsage(g, { ...emptyUsage(), totalTokens: 150_000 }, 0, NOW);
+  g = accountUsage(g, { ...emptyUsage(), totalTokens: 60_000 }, 0, NOW);
+  assert.equal(needsBudgetWarning(g), true, "92% asks for the wrap-up turn");
+
+  g = accountUsage(g, { ...emptyUsage(), totalTokens: 100_000 }, 0, NOW);
+  // Over the ceiling, but the agent was never told — cutting it off here
+  // freezes the work wherever the last turn happened to end.
+  assert.equal(checkSafety(g).ok, true, "past the ceiling still runs one wrap-up turn");
+  assert.equal(needsBudgetWarning(g), true);
+
+  g = noteBudgetWarned(g);
+  assert.equal(needsBudgetWarning(g), false, "the warning is sent once, not every turn");
   const verdict = checkSafety(g);
   assert.equal(verdict.ok, false);
   if (!verdict.ok) {
     assert.equal(verdict.cause, "budget-limit");
-    assert.ok(verdict.detail.includes("550000 of 500000"));
+    assert.ok(verdict.detail.includes("560000 of 500000"));
   }
 
   assert.equal(checkSafety(setBudget(g, null, NOW)).ok, true);
+});
+
+test("cached reads are reported but not charged against the budget", () => {
+  // A goal loop re-reads its whole cached prefix every turn. Counting that
+  // made a 500k budget behave like a turn limit.
+  let g = goal({ tokenBudget: 500_000 });
+  const turn = { input: 800, output: 1_200, cacheRead: 40_000, cacheWrite: 0, totalTokens: 42_000 };
+  for (let i = 0; i < 10; i++) g = accountUsage(g, turn, 1, NOW);
+
+  assert.equal(g.tokensUsed, 420_000, "the user still sees every token");
+  assert.equal(g.budgetTokensUsed, 20_000, "the meter counts what the turns added");
+  assert.equal(checkSafety(g).ok, true, "ten cheap turns do not exhaust a 500k budget");
+});
+
+test("a provider that reports only a total still moves the meter", () => {
+  const g = accountUsage(goal(), { ...emptyUsage(), totalTokens: 9_000 }, 0, NOW);
+  assert.equal(g.budgetTokensUsed, 9_000);
+});
+
+test("goals saved before the split keep the meter where it was", () => {
+  // Restarting their allowance at zero would quietly hand them a second budget.
+  const before = { ...goal({ tokensUsed: 300_000, tokenBudget: 400_000 }) } as Record<string, unknown>;
+  delete before.budgetTokensUsed;
+  delete before.budgetWarned;
+  const restored = replayBranch([
+    { type: "custom", customType: GOAL_STATE, data: before } as never,
+  ]);
+  assert.equal(restored?.budgetTokensUsed, 300_000);
+  assert.equal(restored?.budgetWarned, false);
 });

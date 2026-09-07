@@ -53,6 +53,8 @@ import {
   accountUsage,
   blockGoal,
   checkSafety,
+  needsBudgetWarning,
+  noteBudgetWarned,
   setBudget,
   completeGoal,
   createGoal,
@@ -280,8 +282,15 @@ ${failure.slice(0, 200)}`,
       return;
     }
 
-    commit(ctx, noteAutomaticTurn(goal));
-    queuePrompt(buildContinuationPrompt(goal));
+    // One wrap-up turn before the ceiling, so the run stops somewhere usable
+    // rather than wherever the last turn happened to end.
+    const wrapUp = needsBudgetWarning(goal);
+    const next = wrapUp ? noteBudgetWarned(noteAutomaticTurn(goal)) : noteAutomaticTurn(goal);
+    commit(ctx, next);
+    if (wrapUp) {
+      notify(ctx, "The goal's token budget is nearly spent — asking the agent to wrap up.", "warning");
+    }
+    queuePrompt(buildContinuationPrompt(next, wrapUp));
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
