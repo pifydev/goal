@@ -1,6 +1,6 @@
 ---
 name: goal
-description: Use when the user wants the agent to keep working autonomously toward a stated objective across many turns - explains goal mode discipline (evidence-gated completion, blocked/wait reporting) and when to suggest /goal
+description: Use when the user wants the agent to keep working autonomously toward a stated objective across many turns
 ---
 
 # Goal mode
