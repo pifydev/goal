@@ -1,6 +1,6 @@
 {
   "name": "@pify/goal",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Pin a session goal and keep the agent anchored to it: settled-idle continuation, safety limits, evidence-gated completion",
   "keywords": [
     "pi-package",

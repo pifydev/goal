@@ -318,6 +318,7 @@ ${failure.slice(0, 200)}`,
   pi.registerTool({
     name: "goal_status",
     label: "Goal status",
+    promptSnippet: "Where the current goal stands: steps, evidence, and remaining budget",
     description: "Read the current session goal: objective, status, and usage.",
     parameters: Type.Object({}),
     async execute() {
@@ -331,6 +332,7 @@ ${failure.slice(0, 200)}`,
   pi.registerTool({
     name: "goal_complete",
     label: "Complete goal",
+    promptSnippet: "Finish the current goal, stating the evidence that it is done",
     description:
       "Mark the active goal achieved. Call ONLY after a completion audit against the actual current state. " +
       "Both fields are required: a user-facing summary and the concrete evidence you inspected " +
@@ -384,6 +386,7 @@ ${failure.slice(0, 200)}`,
   pi.registerTool({
     name: "goal_step_done",
     label: "Finish goal step",
+    promptSnippet: "Mark one goal step finished, with what verified it",
     description:
       "Mark the CURRENT step of an ordered goal finished and receive the next one. Requires evidence: " +
       "what you actually verified for this step (command output, file state, test results). Steps advance " +
@@ -418,6 +421,7 @@ ${failure.slice(0, 200)}`,
   pi.registerTool({
     name: "goal_blocked",
     label: "Block goal",
+    promptSnippet: "Record that the goal cannot proceed, and why",
     description:
       "Mark the active goal blocked. Call ONLY after the SAME blocking condition has recurred for at " +
       "least 3 consecutive goal turns. Do not block because work is hard, slow, or uncertain. " +
@@ -440,6 +444,7 @@ ${failure.slice(0, 200)}`,
   pi.registerTool({
     name: "goal_wait",
     label: "Goal wait",
+    promptSnippet: "Pause the goal until a named condition is met",
     description:
       "Pause goal continuation while progress depends on an external event (CI, a human, a deployment) " +
       "that no further work can accelerate. The next user message automatically reactivates the goal.",
