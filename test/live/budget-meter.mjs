@@ -55,7 +55,10 @@ try {
       "--model", MODEL,
       "--no-extensions",
       "-e", probe,
-      "-p", "Read a.ts then read b.ts using the read tool, then say DONE.",
+      // Wrapped in literal double quotes: spawnSync with shell:true on
+      // Windows concatenates args unquoted, and an unwrapped sentence reaches
+      // pi as one prompt per word (see task/test/live/sweep-wire.mjs).
+      "-p", '"Read a.ts then read b.ts using the read tool, then say DONE."',
     ],
     {
       cwd: repo,
