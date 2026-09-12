@@ -96,10 +96,16 @@ try {
 
   check("the session ran", turns.length > 0, `${turns.length} messages`);
   check("the provider reports a cache breakdown", cached > 0, `${cached} cached tokens`);
+  // The claim is that the old meter counted the cached re-reads and the new
+  // one does not — so the gap between them IS the cached tokens. Asserting a
+  // factor instead was measuring the session's length: a two-turn run lands at
+  // 1.96 and failed a `> 2` threshold while the property under test held
+  // exactly. A test that depends on how chatty the model felt is not measuring
+  // the meter.
   check(
-    "cached re-reads dominate the old meter",
-    old > meter * 2,
-    `${old} vs ${meter} — a factor of ${(old / Math.max(1, meter)).toFixed(1)}`,
+    "the old meter counted the cached re-reads and the new one does not",
+    Math.abs(old - meter - cached) <= Math.max(50, cached * 0.02),
+    `old ${old} − new ${meter} = ${old - meter}, cached ${cached}`,
   );
   const steady = turns.filter((t) => t.cacheRead > 0);
   check(

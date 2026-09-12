@@ -118,22 +118,30 @@ export default function goalExtension(pi: ExtensionAPI) {
     let session: AgentSession | null = null;
     const timeout = AbortSignal.timeout(AUDIT_TIMEOUT_MS);
     try {
+      // `reload()` is not optional. `createAgentSession` only loads a resource
+      // loader it builds itself; one passed in is used exactly as handed over,
+      // and a fresh DefaultResourceLoader resolves neither `systemPrompt` nor
+      // `appendSystemPrompt` until it loads. Without it the child ran with no
+      // instructions at all — the call succeeds, the model answers, and it
+      // answers as a generic assistant with nothing to say it went wrong.
+      const loader = new DefaultResourceLoader({
+        cwd: ctx.cwd,
+        agentDir: getAgentDir(),
+        // No extensions: the auditor must not inherit this goal, or any
+        // tool that could make its verdict true after the fact.
+        noExtensions: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        // The session's own system prompt is deliberately not inherited:
+        // the auditor answers to the audit instructions, nothing else.
+        appendSystemPrompt: [AUDIT_SYSTEM_PROMPT],
+      } as never);
+      await loader.reload();
       const created = await createAgentSession({
-        sessionManager: SessionManager.inMemory(ctx.cwd),
-        model: ctx.model as never,
-        tools: AUDIT_TOOLS,
-        resourceLoader: new DefaultResourceLoader({
-          cwd: ctx.cwd,
-          agentDir: getAgentDir(),
-          // No extensions: the auditor must not inherit this goal, or any
-          // tool that could make its verdict true after the fact.
-          noExtensions: true,
-          noPromptTemplates: true,
-          noThemes: true,
-          // The session's own system prompt is deliberately not inherited:
-          // the auditor answers to the audit instructions, nothing else.
-          appendSystemPrompt: [AUDIT_SYSTEM_PROMPT],
-        } as never),
+      sessionManager: SessionManager.inMemory(ctx.cwd),
+      model: ctx.model as never,
+      tools: AUDIT_TOOLS,
+      resourceLoader: loader,
       });
       session = created.session;
       await session.prompt(buildAuditPrompt(objective, summary, evidence), {
