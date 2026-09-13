@@ -1,5 +1,7 @@
 # @pify/goal
 
+[![npm version](https://img.shields.io/npm/v/@pify/goal)](https://www.npmjs.com/package/@pify/goal) [![npm downloads](https://img.shields.io/npm/dm/@pify/goal)](https://www.npmjs.com/package/@pify/goal)
+
 Pin a session goal and keep [pi](https://github.com/earendil-works/pi) anchored to it. The agent is re-prompted at every settled idle boundary until the objective is genuinely achieved — with safety limits, usage accounting, and evidence-gated completion.
 
 Part of the [Pify suite](https://github.com/pifydev). Install with [`pify install goal`](https://github.com/pifydev/cli) or `pi install npm:@pify/goal`.
