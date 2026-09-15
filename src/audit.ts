@@ -128,3 +128,38 @@ export function auditNote(verdict: AuditVerdict): string {
   if (verdict.outcome === "pass") return `\nCompletion audit: passed — ${verdict.reason}`;
   return `\nCompletion audit: inconclusive — ${verdict.reason}. Accepted without independent verification.`;
 }
+
+/** What goal_complete should do once the (possibly long) audit await returns. */
+export type CompletionDecision =
+  | { action: "complete"; note: string }
+  | { action: "reject"; reason: string }
+  | { action: "aborted" }
+  | { action: "stale" };
+
+/**
+ * Decide whether a completion claim may be committed AFTER the audit await
+ * returns. The audit can run ~180s; in that window the user may press Esc
+ * (aborting the turn) or change the goal from a command. Committing the
+ * pre-await "complete" snapshot then would mark the goal done against the
+ * user's interruption, or resurrect a goal they cleared/paused/replaced.
+ *
+ * Pure so the precedence is testable without a live session. Order matters:
+ *  - aborted wins — the user asked for control back; nothing is completed;
+ *  - a stale goal (cleared/paused/replaced mid-audit) is not completed, and
+ *    is never described as "still active" (it may be gone);
+ *  - a failed audit rejects the claim and leaves the goal active;
+ *  - otherwise the claim stands, with the audit note attached (empty when the
+ *    audit was disabled, i.e. verdict is null).
+ */
+export function decideCompletion(input: {
+  aborted: boolean;
+  stillCurrent: boolean;
+  verdict: AuditVerdict | null;
+}): CompletionDecision {
+  if (input.aborted) return { action: "aborted" };
+  if (!input.stillCurrent) return { action: "stale" };
+  if (input.verdict && input.verdict.outcome === "fail") {
+    return { action: "reject", reason: input.verdict.reason };
+  }
+  return { action: "complete", note: input.verdict ? auditNote(input.verdict) : "" };
+}

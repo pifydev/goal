@@ -26,8 +26,8 @@ import { Type } from "typebox";
 
 import {
   AUDIT_SYSTEM_PROMPT,
-  auditNote,
   buildAuditPrompt,
+  decideCompletion,
   parseAuditVerdict,
   rejectionMessage,
   type AuditVerdict,
@@ -356,30 +356,53 @@ ${failure.slice(0, 200)}`,
         );
       }
 
-      let note = "";
+      let verdict: AuditVerdict | null = null;
       if (auditEnabled) {
         notify(ctx as UiContext, "Auditing the completion claim…", "info");
-        const verdict = await runAudit(
+        verdict = await runAudit(
           ctx as UiContext,
           current.objective,
           params.summary.trim(),
           params.evidence.trim(),
           signal,
         );
-        if (verdict.outcome === "fail") {
-          notify(ctx as UiContext, `Completion audit rejected the claim: ${verdict.reason}`, "warning");
-          // The goal stays active: a rejected claim is unfinished work.
-          throw new Error(rejectionMessage(verdict.reason));
-        }
-        note = auditNote(verdict);
       }
 
-      commit(ctx as UiContext, completeGoal(current, params.summary.trim(), Date.now()));
-      notify(ctx as UiContext, `🎯 Goal achieved\n${statusBlock(goal)}${note}`, "info");
-      return {
-        content: [{ type: "text", text: `Goal marked complete. Report the result to the user.${note}` }],
-        details: { goal },
-      };
+      // The audit runs behind an await for up to ~180s. In that window the
+      // user may press Esc (aborting the turn) or run a /goal command that
+      // pauses, clears, or replaces the goal. Committing the pre-await
+      // "complete" snapshot now would mark the goal done against the user's
+      // interruption, or resurrect a goal they changed — re-check before
+      // committing. Reference identity is exact under the append-only snapshot
+      // model: any concurrent change reassigns `goal` to a new snapshot.
+      const aborted = signal?.aborted === true || agentAbortSignal?.aborted === true;
+      const decision = decideCompletion({ aborted, stillCurrent: goal === current, verdict });
+      switch (decision.action) {
+        case "aborted":
+          // Esc mid-audit: the user wants control back. Leave the goal as-is;
+          // agent_end pauses it as an interrupt. Never mark it complete.
+          throw new Error(
+            "Goal completion aborted — the turn was interrupted before the claim could be committed.",
+          );
+        case "stale":
+          // The goal was paused, cleared, or replaced while the audit ran.
+          throw new Error(
+            "The goal changed while the completion audit ran; the earlier claim was not marked complete.",
+          );
+        case "reject":
+          notify(ctx as UiContext, `Completion audit rejected the claim: ${decision.reason}`, "warning");
+          // The goal stays active: a rejected claim is unfinished work.
+          throw new Error(rejectionMessage(decision.reason));
+        case "complete": {
+          const note = decision.note;
+          commit(ctx as UiContext, completeGoal(current, params.summary.trim(), Date.now()));
+          notify(ctx as UiContext, `🎯 Goal achieved\n${statusBlock(goal)}${note}`, "info");
+          return {
+            content: [{ type: "text", text: `Goal marked complete. Report the result to the user.${note}` }],
+            details: { goal },
+          };
+        }
+      }
     },
   });
 
