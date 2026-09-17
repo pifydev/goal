@@ -146,6 +146,21 @@ test("the budget warns once, then stops on the next turn past the ceiling", asyn
   }
 
   assert.equal(checkSafety(setBudget(g, null, NOW)).ok, true);
+
+  // Changing the ceiling after the warning fired re-arms the wrap-up turn:
+  // a raised budget gets its own warning at 90% of the new number rather than
+  // inheriting the spent budget's "already warned" flag as a hard cut-off.
+  assert.equal(g.budgetWarned, true, "still warned for the old 500k ceiling");
+  let raised = setBudget(g, 1_000_000, NOW); // g is at 560k billable
+  assert.equal(raised.budgetWarned, false, "a new ceiling re-arms the warning");
+  assert.equal(checkSafety(raised).ok, true, "56% of the new ceiling does not stop the loop");
+  assert.equal(needsBudgetWarning(raised), false, "56% is not yet the deadline");
+  raised = accountUsage(raised, { ...emptyUsage(), totalTokens: 350_000 }, 0, NOW);
+  assert.equal(needsBudgetWarning(raised), true, "91% of the new ceiling asks for a fresh wrap-up turn");
+
+  // Re-setting the same ceiling is a no-op and must not re-arm the warning.
+  const warnedAgain = noteBudgetWarned(raised);
+  assert.equal(setBudget(warnedAgain, 1_000_000, NOW).budgetWarned, true);
 });
 
 test("cached reads are reported but not charged against the budget", () => {

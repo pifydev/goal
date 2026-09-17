@@ -94,6 +94,21 @@ test("continuation prompt carries the completion audit and stale guard", () => {
   assert.ok(prompt.includes("paused, cleared, or replaced"));
 });
 
+test("the wrap-up continuation replaces 'choose the next action', not appends it", () => {
+  const g = createGoal("obj", 0, "g");
+  const normal = buildContinuationPrompt(g, false);
+  assert.ok(normal.includes("Choose the next concrete action toward the objective."));
+  assert.ok(!normal.includes("The token budget for this goal is nearly spent"));
+
+  // Once warned, every remaining turn stays in wrap-up mode: the "start the
+  // next thing" line must be gone so it does not contradict "do not start
+  // anything new".
+  const wrap = buildContinuationPrompt(g, true);
+  assert.ok(wrap.includes("The token budget for this goal is nearly spent"));
+  assert.ok(wrap.includes("do not start anything new"));
+  assert.ok(!wrap.includes("Choose the next concrete action toward the objective."));
+});
+
 test("v0.2 budget route parsing", async () => {
   const { parseBudgetValue } = await import("../src/route.ts");
   assert.equal(parseBudgetValue("500k"), 500_000);

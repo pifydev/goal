@@ -31,7 +31,14 @@ test("parseSteps reads a single line of separated segments", () => {
     parseSteps("add the logger; wire it into auth; cover it with tests").map((s) => s.text),
     ["add the logger", "wire it into auth", "cover it with tests"],
   );
-  assert.deepEqual(parseSteps("read the code -> write the fix").map((s) => s.text), ["read the code", "write the fix"]);
+});
+
+test("parseSteps ignores arrow separators — they are ordinary prose", () => {
+  // "->" / "→" turn up in prose ("migrate JSON -> YAML", "v1 -> v2"); splitting
+  // on them would silently drive a prose objective as a 2-step ordered goal.
+  assert.deepEqual(parseSteps("migrate the config loader from JSON -> YAML and update the docs"), []);
+  assert.deepEqual(parseSteps("read the code -> write the fix"), []);
+  assert.deepEqual(parseSteps("upgrade v1 → v2"), []);
 });
 
 test("parseSteps leaves prose alone", () => {

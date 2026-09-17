@@ -31,9 +31,11 @@ function clean(text: string): string {
 /**
  * Read an ordered step list out of an objective. Recognises the two ways a
  * person actually types one: markers on separate lines, or a single line of
- * segments separated by `;` / `->`. Prose stays prose — a sentence containing
- * a comma is not a plan, and guessing wrong would silently change how the
- * whole goal is driven.
+ * segments separated by `;`. Prose stays prose — a sentence containing a comma
+ * is not a plan, and guessing wrong would silently change how the whole goal is
+ * driven. Arrow separators (`->`, `→`) are deliberately not recognised: they
+ * turn up in ordinary prose ("migrate JSON -> YAML", "v1 -> v2"), and splitting
+ * on them would silently drive a prose objective as an ordered list.
  */
 export function parseSteps(objective: string): GoalStep[] {
   const text = (objective ?? "").trim();
@@ -47,7 +49,7 @@ export function parseSteps(objective: string): GoalStep[] {
 
   if (lines.length === 1) {
     const segments = text
-      .split(/\s*(?:;|->|→)\s*/)
+      .split(/\s*;\s*/)
       .map((s) => clean(s))
       .filter(Boolean);
     if (segments.length >= 2) {

@@ -120,9 +120,13 @@ export function buildContinuationPrompt(goal: Goal, wrapUp = false): string {
     ...(stepBlock(goal) ? ["", stepBlock(goal)!] : []),
     "",
     usageLine(goal),
-    ...(wrapUp ? ["", BUDGET_WRAP_UP] : []),
     "",
-    "Avoid repeating work that is already done. Choose the next concrete action toward the objective.",
+    // In wrap-up mode the "choose the next concrete action" line is REPLACED,
+    // not joined: keeping both would tell the agent to wind down and start
+    // something new in the same breath.
+    wrapUp
+      ? BUDGET_WRAP_UP
+      : "Avoid repeating work that is already done. Choose the next concrete action toward the objective.",
     "",
     COMPLETION_AUDIT,
     "",

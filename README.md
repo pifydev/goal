@@ -52,7 +52,7 @@ Your next message automatically reactivates a blocked or waiting goal.
 
 Write the objective as a list — one step per line, or separated by `;` — and it is worked in order. Every continuation prompt marks which step is current, while the whole list stays visible because it is your objective. `goal_step_done(evidence)` advances the cursor, and `goal_complete` is refused while steps remain: an ordered goal is finished when its list is, not when the agent feels done with the interesting part.
 
-Prose objectives are unaffected. A sentence with commas is not a plan, so it is never parsed as one.
+Prose objectives are unaffected. A sentence with commas is not a plan, so it is never parsed as one. Only line markers and `;` split a goal into steps — arrows like `->` and `→` stay prose (`migrate JSON -> YAML` is one objective, not two steps), because they turn up too often in ordinary wording to guess from.
 
 ## Independent completion audit
 
@@ -60,7 +60,7 @@ Opt in with `/goal audit on`. The agent that did the work is the worst judge of 
 
 With the audit on, every `goal_complete` claim is handed to a second agent with read-only tools, no extensions, and instructions to *disprove* the claim against the repository as it stands. A rejection keeps the goal active and hands the first agent a specific reason to fix.
 
-An auditor that times out or answers unreadably is recorded as **inconclusive** and lets the completion through. A broken auditor must never be able to trap the agent in a loop it cannot exit.
+An auditor that times out (180s), is cancelled when you press Esc, cannot be started, or answers unreadably is recorded as **inconclusive** and lets the completion through. A broken or interrupted auditor must never be able to trap the agent in a loop it cannot exit.
 
 ## A token budget that measures work, not repetition
 
@@ -68,11 +68,11 @@ An auditor that times out or answers unreadably is recorded as **inconclusive** 
 
 Counting those re-reads made the budget behave like a turn limit wearing a token limit's name. In a measured run (`test/live/budget-meter.mjs`) pi reported 238,196 tokens where the turns had actually added 16,168 — a factor of 14.7 — with each steady-state turn charging around 11,000 against the ceiling while adding about 250. Cached reads are still displayed, just not billed against the number you set.
 
-**One wrap-up turn before the ceiling stops the loop.** At 90% the agent is told the budget is nearly gone and asked to finish or cleanly back out of whatever is half-done and say what remains — and explicitly *not* to declare completion because it ran out. The ceiling only ends the loop after that turn has happened, so a budget freeze leaves the work somewhere a person can pick it up.
+**Wrap-up mode before the ceiling.** At 90% the agent is told the budget is nearly gone and asked to finish or cleanly back out of whatever is half-done and say what remains — and explicitly *not* to declare completion because it ran out. Every turn from there to the ceiling stays in wrap-up mode rather than starting new work, and the loop only stops after a wrap-up turn has run, so a budget freeze leaves the work somewhere a person can pick it up. Changing the budget — raising it, or setting a new one after `off` — re-arms the warning, so a fresh ceiling gets its own wrap-up turn at 90% instead of becoming a hard cut-off.
 
 ## Safety
 
-- **Errors that repeating cannot fix stop the goal.** A goal drives its own turns, so an expired key, an empty balance, a context overflow, or a model the account cannot reach would otherwise be retried on every continuation, forever, at the cost of a request each time. Those pause the goal with the reason. Rate limits, overloads and dropped connections deliberately do not — riding those out is what the loop is for.
+- **Errors that repeating cannot fix stop the goal.** A goal drives its own turns, so an expired key, an empty balance, a context overflow, or a model the account cannot reach would otherwise be retried on every continuation, forever, at the cost of a request each time. Those pause the goal with the reason. Rate limits, overloads and dropped connections deliberately do not — riding those out is what the loop is for. The decision is made at the settled boundary, after pi's own compact-and-retry has had its chance: a context overflow pi recovers from does not pause the goal, and pi's transient retries are not counted against the no-progress limit.
 - **Turn and progress limits.** After 20 automatic turns without user input, or 3 consecutive tool-free turns with identical output (SHA-256 over normalised visible text), the goal pauses for review instead of looping.
 - **Interrupts respected.** Pressing Esc during a goal turn pauses the goal. The agent never barrels on after you grabbed the wheel.
 - **Prompt-injection hygiene.** The objective travels wrapped in `<untrusted_objective>` tags, XML-escaped and marked as data, so it cannot escalate into instructions.

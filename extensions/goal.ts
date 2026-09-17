@@ -18,7 +18,6 @@ import {
   SessionManager,
   createAgentSession,
   getAgentDir,
-  type AgentSession,
   type ExtensionAPI,
   type ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
@@ -28,8 +27,9 @@ import {
   AUDIT_SYSTEM_PROMPT,
   buildAuditPrompt,
   decideCompletion,
-  parseAuditVerdict,
   rejectionMessage,
+  runAuditWithSession,
+  type AuditSessionLike,
   type AuditVerdict,
 } from "../src/audit.ts";
 import { footerText, statusBlock } from "../src/format.ts";
@@ -82,6 +82,11 @@ export default function goalExtension(pi: ExtensionAPI) {
   let auditEnabled = false;
   let turnStartedAt: number | null = null;
   let agentAbortSignal: AbortSignal | undefined;
+  // The error text of the most recent agent_end attempt in the current turn.
+  // pi emits agent_end per attempt (the overflow attempt, then the compacted
+  // retry), so a later attempt overwrites this; the unrecoverable-error
+  // decision is deferred to agent_settled, after pi's own recovery has run.
+  let lastTurnFailure = "";
   const turnUsage = new TurnUsageTracker();
 
   // ── Persistence & UI ─────────────────────────────────────────────────
@@ -115,59 +120,41 @@ export default function goalExtension(pi: ExtensionAPI) {
     evidence: string,
     signal?: AbortSignal,
   ): Promise<AuditVerdict> {
-    let session: AgentSession | null = null;
-    const timeout = AbortSignal.timeout(AUDIT_TIMEOUT_MS);
-    try {
-      // `reload()` is not optional. `createAgentSession` only loads a resource
-      // loader it builds itself; one passed in is used exactly as handed over,
-      // and a fresh DefaultResourceLoader resolves neither `systemPrompt` nor
-      // `appendSystemPrompt` until it loads. Without it the child ran with no
-      // instructions at all — the call succeeds, the model answers, and it
-      // answers as a generic assistant with nothing to say it went wrong.
-      const loader = new DefaultResourceLoader({
-        cwd: ctx.cwd,
-        agentDir: getAgentDir(),
-        // No extensions: the auditor must not inherit this goal, or any
-        // tool that could make its verdict true after the fact.
-        noExtensions: true,
-        noPromptTemplates: true,
-        noThemes: true,
-        // The session's own system prompt is deliberately not inherited:
-        // the auditor answers to the audit instructions, nothing else.
-        appendSystemPrompt: [AUDIT_SYSTEM_PROMPT],
-      } as never);
-      await loader.reload();
-      const created = await createAgentSession({
-      sessionManager: SessionManager.inMemory(ctx.cwd),
-      model: ctx.model as never,
-      tools: AUDIT_TOOLS,
-      resourceLoader: loader,
-      });
-      session = created.session;
-      await session.prompt(buildAuditPrompt(objective, summary, evidence), {
-        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-      } as never);
-
-      const messages = session.messages as Array<{ role?: string; content?: Array<{ type?: string; text?: string }> }>;
-      const last = [...messages].reverse().find((m) => m.role === "assistant");
-      const text = (last?.content ?? [])
-        .filter((part) => part.type === "text" && typeof part.text === "string")
-        .map((part) => part.text)
-        .join("")
-        .trim();
-      return parseAuditVerdict(text);
-    } catch (err) {
-      return {
-        outcome: "inconclusive",
-        reason: `the audit could not run (${err instanceof Error ? err.message : String(err)})`,
-      };
-    } finally {
-      try {
-        session?.dispose();
-      } catch {
-        // disposal is best-effort
-      }
-    }
+    // The cancellation/timeout orchestration lives in runAuditWithSession so it
+    // is testable without a live model; here we only build the child session.
+    return runAuditWithSession({
+      prompt: buildAuditPrompt(objective, summary, evidence),
+      timeoutMs: AUDIT_TIMEOUT_MS,
+      signal,
+      create: async () => {
+        // `reload()` is not optional. `createAgentSession` only loads a resource
+        // loader it builds itself; one passed in is used exactly as handed over,
+        // and a fresh DefaultResourceLoader resolves neither `systemPrompt` nor
+        // `appendSystemPrompt` until it loads. Without it the child ran with no
+        // instructions at all — the call succeeds, the model answers, and it
+        // answers as a generic assistant with nothing to say it went wrong.
+        const loader = new DefaultResourceLoader({
+          cwd: ctx.cwd,
+          agentDir: getAgentDir(),
+          // No extensions: the auditor must not inherit this goal, or any
+          // tool that could make its verdict true after the fact.
+          noExtensions: true,
+          noPromptTemplates: true,
+          noThemes: true,
+          // The session's own system prompt is deliberately not inherited:
+          // the auditor answers to the audit instructions, nothing else.
+          appendSystemPrompt: [AUDIT_SYSTEM_PROMPT],
+        } as never);
+        await loader.reload();
+        const created = await createAgentSession({
+          sessionManager: SessionManager.inMemory(ctx.cwd),
+          model: ctx.model as never,
+          tools: AUDIT_TOOLS,
+          resourceLoader: loader,
+        });
+        return created.session as unknown as AuditSessionLike;
+      },
+    });
   }
 
   /** Queue a hidden, model-visible prompt that triggers a turn when idle. */
@@ -236,6 +223,9 @@ export default function goalExtension(pi: ExtensionAPI) {
     const aborted = agentAbortSignal?.aborted === true;
     agentAbortSignal = undefined;
     if (!goal) return;
+    // Once the goal is inactive nothing below changes it; committing an
+    // unchanged snapshot every turn only bloats the branch (and every replay).
+    const before = goal;
 
     // Account this turn's usage and time against the goal.
     if (turnStartedAt !== null) {
@@ -246,20 +236,13 @@ export default function goalExtension(pi: ExtensionAPI) {
     }
 
     if (goal.status === "active") {
-      // An error the user has to fix would otherwise be retried on every
-      // continuation, forever, at the cost of a request each time.
+      // Record this attempt's error, if any. The unrecoverable-error decision
+      // is deferred to agent_settled: pi emits this event from the agent loop
+      // BEFORE its own compact-and-retry recovers a context overflow, so
+      // pausing here would stop the goal at the exact moment pi is about to
+      // recover the turn. A later retry attempt overwrites this.
       const failure = turnErrorMessage(event.messages as readonly unknown[]);
-      const kind = classifyUnrecoverable(failure);
-      if (kind) {
-        commit(ctx, pauseGoal(goal, "error", Date.now()));
-        notify(
-          ctx,
-          `Goal paused — ${kind}. Continuing would repeat the same failure. Fix it, then /goal resume.
-${failure.slice(0, 200)}`,
-          "error",
-        );
-        return;
-      }
+      lastTurnFailure = failure;
       if (aborted) {
         // Esc during a goal turn = the user wants control back. Pause, do not
         // continue. (The published API cannot distinguish abort sources; a
@@ -268,15 +251,41 @@ ${failure.slice(0, 200)}`,
         notify(ctx, "Goal paused — turn was interrupted. /goal resume to continue.", "warning");
         return;
       }
-      goal = noteTurnProgress(goal, event.messages as readonly unknown[]);
+      // A failed attempt carries no visible output; counting it as a tool-free
+      // repeat would let pi's transient retries (429/529, dropped streams) trip
+      // the no-progress detector, which is exactly what should be ridden out.
+      if (!failure) goal = noteTurnProgress(goal, event.messages as readonly unknown[]);
     }
-    commit(ctx, goal);
+    if (goal !== before) commit(ctx, goal);
   });
 
   pi.on("agent_settled", async (_event, ctx) => {
     // The sole continuation trigger: fires after queued work, retries, and
     // compaction have finished. Continue exactly once per settled boundary.
     if (!goal || goal.status !== "active") return;
+
+    // Decide unrecoverable errors here, not in agent_end, so pi's own
+    // compact-and-retry has already had its chance to recover an overflow. An
+    // error the user has to fix would otherwise be retried on every
+    // continuation, forever, at the cost of a request each time. This runs
+    // before the idle/pending early return: a user message typed during the
+    // failed run must not let the goal skip the pause (the next agent_end would
+    // overwrite lastTurnFailure).
+    const kind = classifyUnrecoverable(lastTurnFailure);
+    if (kind) {
+      const failure = lastTurnFailure;
+      lastTurnFailure = "";
+      commit(ctx, pauseGoal(goal, "error", Date.now()));
+      notify(
+        ctx,
+        `Goal paused — ${kind}. Continuing would repeat the same failure. Fix it, then /goal resume.
+${failure.slice(0, 200)}`,
+        "error",
+      );
+      return;
+    }
+    lastTurnFailure = "";
+
     if (!ctx.isIdle() || ctx.hasPendingMessages()) return;
 
     const verdict = checkSafety(goal);
@@ -298,7 +307,10 @@ ${failure.slice(0, 200)}`,
     if (wrapUp) {
       notify(ctx, "The goal's token budget is nearly spent — asking the agent to wrap up.", "warning");
     }
-    queuePrompt(buildContinuationPrompt(next, wrapUp));
+    // Once warned, stay in wrap-up mode for every remaining turn: telling the
+    // agent to "choose the next concrete action" between 90% and the ceiling
+    // would undo the wrap-up and freeze the run mid-change at 100%.
+    queuePrompt(buildContinuationPrompt(next, wrapUp || next.budgetWarned));
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {

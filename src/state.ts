@@ -133,7 +133,16 @@ export type SafetyVerdict =
 
 /** Set or clear the token budget on a goal. */
 export function setBudget(goal: Goal, budget: number | null, now: number): Goal {
-  return { ...goal, tokenBudget: budget, updatedAt: now };
+  return {
+    ...goal,
+    tokenBudget: budget,
+    // Changing the ceiling re-arms the wrap-up warning. Without this, once any
+    // warning has fired every later budget is enforced as a hard cut-off with
+    // no wrap-up turn — raising a spent budget would freeze the work mid-change
+    // at the new ceiling instead of getting its own wrap-up at 90%.
+    budgetWarned: budget === goal.tokenBudget ? goal.budgetWarned : false,
+    updatedAt: now,
+  };
 }
 
 /** Check the safety limits BEFORE queueing another automatic continuation. */

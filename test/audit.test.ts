@@ -4,9 +4,34 @@ import {
   auditNote,
   buildAuditPrompt,
   parseAuditVerdict,
+  readAssistantText,
   rejectionMessage,
+  runAuditWithSession,
+  type AuditSessionLike,
 } from "../src/audit.ts";
 import { parseGoalRoute } from "../src/route.ts";
+
+/** A session whose prompt() never settles on its own — only abort() releases it. */
+function hangingSession(): AuditSessionLike & { aborted: boolean; disposed: boolean } {
+  let release: (() => void) | undefined;
+  return {
+    aborted: false,
+    disposed: false,
+    messages: [] as unknown,
+    prompt() {
+      return new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    },
+    abort() {
+      this.aborted = true;
+      release?.();
+    },
+    dispose() {
+      this.disposed = true;
+    },
+  };
+}
 
 test("buildAuditPrompt fences every untrusted field", () => {
   const prompt = buildAuditPrompt("Ship the parser", "Done it", "ran bun test");
@@ -92,6 +117,85 @@ test("parseAuditVerdict accepts the shapes real models actually emit", () => {
   assert.equal(parseAuditVerdict('```json\n{"success": true}\n```').outcome, "pass");
   // a JSON object with none of the known keys is still inconclusive
   assert.equal(parseAuditVerdict('{"note":"hmm"}').outcome, "inconclusive");
+});
+
+test("readAssistantText joins the last assistant message's text parts", () => {
+  const messages = [
+    { role: "assistant", content: [{ type: "text", text: "early" }] },
+    { role: "user", content: [{ type: "text", text: "ignored" }] },
+    { role: "assistant", content: [{ type: "text", text: "fi" }, { type: "toolCall" }, { type: "text", text: "nal" }] },
+  ];
+  assert.equal(readAssistantText(messages), "final");
+  assert.equal(readAssistantText(undefined), "");
+  assert.equal(readAssistantText([]), "");
+});
+
+test("runAuditWithSession parses the verdict when the audit completes", async () => {
+  const session: AuditSessionLike & { disposed: boolean } = {
+    disposed: false,
+    messages: [
+      { role: "assistant", content: [{ type: "text", text: '{"verdict":"fail","reason":"no such file"}' }] },
+    ] as unknown,
+    async prompt() {},
+    abort() {},
+    dispose() {
+      this.disposed = true;
+    },
+  };
+  const verdict = await runAuditWithSession({
+    create: async () => session,
+    prompt: "audit",
+    timeoutMs: 200,
+  });
+  assert.deepEqual(verdict, { outcome: "fail", reason: "no such file" });
+  assert.equal(session.disposed, true, "the session is disposed even on the happy path");
+});
+
+test("runAuditWithSession times out, aborts the child, and reports inconclusive", async () => {
+  // pi's prompt() cannot be cancelled through its arguments, so the deadline is
+  // a timer that calls session.abort(); prompt() then resolves and the combined
+  // signal — not the answer — decides the verdict.
+  const session = hangingSession();
+  const verdict = await runAuditWithSession({
+    create: async () => session,
+    prompt: "audit",
+    timeoutMs: 10,
+  });
+  assert.equal(verdict.outcome, "inconclusive");
+  assert.match(verdict.reason, /timed out/);
+  assert.equal(session.aborted, true, "the deadline aborts the child session");
+  assert.equal(session.disposed, true);
+});
+
+test("runAuditWithSession honours a caller cancel mid-audit", async () => {
+  const controller = new AbortController();
+  const session = hangingSession();
+  const pending = runAuditWithSession({
+    create: async () => session,
+    prompt: "audit",
+    timeoutMs: 200,
+    signal: controller.signal,
+  });
+  // Cancel once creation has resolved and prompt() is in flight.
+  setTimeout(() => controller.abort(), 5);
+  const verdict = await pending;
+  assert.equal(verdict.outcome, "inconclusive");
+  assert.match(verdict.reason, /cancelled/);
+  assert.equal(session.aborted, true, "the caller's Esc aborts the child session");
+  assert.equal(session.disposed, true);
+});
+
+test("runAuditWithSession is inconclusive, never a rejection, when the session cannot be built", async () => {
+  const verdict = await runAuditWithSession({
+    create: async () => {
+      throw new Error("no model configured");
+    },
+    prompt: "audit",
+    timeoutMs: 200,
+  });
+  assert.equal(verdict.outcome, "inconclusive");
+  assert.match(verdict.reason, /could not run/);
+  assert.match(verdict.reason, /no model configured/);
 });
 
 test("parseAuditVerdict reads a verdict sentence in the field", () => {
