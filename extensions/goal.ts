@@ -32,6 +32,7 @@ import {
   type AuditSessionLike,
   type AuditVerdict,
 } from "../src/audit.ts";
+import { resolveChildModel } from "../src/child-model.ts";
 import { footerText, statusBlock } from "../src/format.ts";
 import {
   buildContinuationPrompt,
@@ -146,9 +147,13 @@ export default function goalExtension(pi: ExtensionAPI) {
           appendSystemPrompt: [AUDIT_SYSTEM_PROMPT],
         } as never);
         await loader.reload();
+        // pi 0.99: a virtual selection cannot drive a child session; take the
+        // physical model the host last routed to. See src/child-model.ts.
+        const resolved = resolveChildModel(ctx.model as never, ctx.sessionManager.getBranch() as unknown[], (p, i) => ctx.modelRegistry.find(p, i) as never);
+        if (!resolved.ok) throw new Error(resolved.reason);
         const created = await createAgentSession({
           sessionManager: SessionManager.inMemory(ctx.cwd),
-          model: ctx.model as never,
+          model: resolved.model as never,
           tools: AUDIT_TOOLS,
           resourceLoader: loader,
         });
