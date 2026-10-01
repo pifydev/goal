@@ -191,3 +191,17 @@ test("goals saved before the split keep the meter where it was", () => {
   assert.equal(restored?.budgetTokensUsed, 300_000);
   assert.equal(restored?.budgetWarned, false);
 });
+
+test("goal_wait's timed re-check is clamped to a sane window and recorded on the goal", () => {
+  const { clampResumeAfter, MIN_RESUME_AFTER_MS, MAX_RESUME_AFTER_MS, waitGoal, createGoal } = require("../src/state.ts") as typeof import("../src/state.ts");
+  assert.equal(clampResumeAfter(500), MIN_RESUME_AFTER_MS, "under 10s is a polling loop");
+  assert.equal(clampResumeAfter(90_000), 90_000);
+  assert.equal(clampResumeAfter(Number.MAX_SAFE_INTEGER), MAX_RESUME_AFTER_MS, "never past setTimeout's ceiling");
+  assert.equal(clampResumeAfter(Number.NaN), MIN_RESUME_AFTER_MS);
+  const g = createGoal("ship it", 1_000, "id-1");
+  const timed = waitGoal(g, "CI", 2_000, 62_000);
+  assert.equal(timed.status, "waiting");
+  assert.equal(timed.waitUntil, 62_000);
+  const open = waitGoal(timed, "a human", 3_000);
+  assert.equal("waitUntil" in open, false, "an open-ended wait carries no deadline");
+});

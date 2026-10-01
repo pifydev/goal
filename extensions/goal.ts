@@ -66,6 +66,7 @@ import {
   replayBranch,
   resumeGoal,
   waitGoal,
+  clampResumeAfter,
 } from "../src/state.ts";
 import type { Goal } from "../src/types.ts";
 import { TurnUsageTracker } from "../src/usage.ts";
@@ -93,6 +94,32 @@ export default function goalExtension(pi: ExtensionAPI) {
   // ── Persistence & UI ─────────────────────────────────────────────────
 
   /** Persist a full snapshot (last-wins replay) and refresh the footer. */
+  /** The five tools, declared to the model only once a goal exists. */
+  const GOAL_TOOL_NAMES = ["goal_status", "goal_complete", "goal_step_done", "goal_blocked", "goal_wait"] as const;
+  /** Revealed once per session; never hidden again mid-run (that would churn the tool-schema cache). */
+  let revealed = false;
+
+  /**
+   * A session that never uses /goal used to carry five tool schemas in every
+   * request. The tools register inert (`defaultActive: false`) and are added
+   * to the active set — merged, never replacing it, so a plan-mode or --tools
+   * restriction survives — the first time a live goal exists: on /goal, and
+   * on session_start/session_tree when the branch replays a non-terminal one.
+   */
+  function revealGoalTools(): void {
+    if (revealed) return;
+    try {
+      const api = pi as unknown as { getActiveTools?: () => string[]; setActiveTools?: (names: string[]) => void };
+      if (typeof api.getActiveTools !== "function" || typeof api.setActiveTools !== "function") return;
+      const active = new Set(api.getActiveTools());
+      for (const name of GOAL_TOOL_NAMES) active.add(name);
+      api.setActiveTools([...active]);
+      revealed = true;
+    } catch {
+      // An older host activates on registration; nothing to reveal.
+    }
+  }
+
   function commit(ctx: UiContext, next: Goal | null): void {
     goal = next;
     pi.appendEntry(GOAL_STATE, next);
@@ -163,6 +190,40 @@ export default function goalExtension(pi: ExtensionAPI) {
   }
 
   /** Queue a hidden, model-visible prompt that triggers a turn when idle. */
+  /** One deadline wake at a time; a generation stamp makes a stale timer a no-op. */
+  let waitTimer: ReturnType<typeof setTimeout> | null = null;
+  let waitGeneration = 0;
+
+  function clearWaitTimer(): void {
+    waitGeneration++;
+    if (waitTimer) {
+      clearTimeout(waitTimer);
+      waitTimer = null;
+    }
+  }
+
+  /**
+   * Wake a waiting goal after `delay` so a CI run or a deploy can be
+   * re-checked unattended. Fires only if the SAME waiting goal instance is
+   * still waiting; a real user message, /goal pause|resume|clear|set, a
+   * replacement goal, or a session change all disarm it first.
+   */
+  function armWaitTimer(ctx: UiContext, waiting: Goal, delay: number): void {
+    clearWaitTimer();
+    const generation = waitGeneration;
+    waitTimer = setTimeout(() => {
+      waitTimer = null;
+      if (generation !== waitGeneration) return;
+      if (!goal || goal.status !== "waiting" || goal.id !== waiting.id || goal.updatedAt !== waiting.updatedAt) return;
+      commit(ctx, resumeGoal(goal, Date.now()));
+      notify(ctx, `Goal re-checking: ${waiting.waitingReason ?? "the wait elapsed"}`, "info");
+      queuePrompt(
+        `The wait for "${waiting.waitingReason ?? "an external event"}" has elapsed. Check whether it is resolved and continue toward the goal; if it is still pending, call goal_wait again (with resume_after_ms if a timed re-check still makes sense).`,
+      );
+    }, delay);
+    waitTimer.unref?.();
+  }
+
   function queuePrompt(content: string): void {
     pi.sendMessage(
       { customType: CONTINUATION_TYPE, content, display: false },
@@ -187,6 +248,9 @@ export default function goalExtension(pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     goal = replayBranch(ctx.sessionManager.getBranch() as never);
     auditEnabled = replayAudit(ctx.sessionManager.getBranch() as never);
+    revealed = false;
+    clearWaitTimer();
+    if (goal && goal.status !== "complete") revealGoalTools();
     updateFooter(ctx);
     if (goal?.status === "active") {
       // Never auto-run on open (surprise token spend); the goal resumes
@@ -198,6 +262,8 @@ export default function goalExtension(pi: ExtensionAPI) {
   pi.on("session_tree", async (_event, ctx) => {
     goal = replayBranch(ctx.sessionManager.getBranch() as never);
     auditEnabled = replayAudit(ctx.sessionManager.getBranch() as never);
+    clearWaitTimer();
+    if (goal && goal.status !== "complete") revealGoalTools();
     updateFooter(ctx);
   });
 
@@ -205,6 +271,7 @@ export default function goalExtension(pi: ExtensionAPI) {
     // Fires only for real user prompts: start a fresh safety epoch, and
     // auto-reactivate blocked/waiting goals (the user's input may be exactly
     // what unblocks them — code-yeongyu semantics). Paused stays paused.
+    clearWaitTimer();
     if (!goal) return;
     if (goal.status === "blocked" || goal.status === "waiting") {
       commit(ctx, resumeGoal(goal, Date.now()));
@@ -334,6 +401,8 @@ ${failure.slice(0, 200)}`,
 
   pi.registerTool({
     name: "goal_status",
+    // Inert until a goal exists (pi 0.99 defaultActive); revealed by revealGoalTools().
+    defaultActive: false,
     label: "Goal status",
     promptSnippet: "Where the current goal stands: steps, evidence, and remaining budget",
     description: "Read the current session goal: objective, status, and usage.",
@@ -348,6 +417,8 @@ ${failure.slice(0, 200)}`,
 
   pi.registerTool({
     name: "goal_complete",
+    // Inert until a goal exists (pi 0.99 defaultActive); revealed by revealGoalTools().
+    defaultActive: false,
     label: "Complete goal",
     promptSnippet: "Finish the current goal, stating the evidence that it is done",
     description:
@@ -425,6 +496,8 @@ ${failure.slice(0, 200)}`,
 
   pi.registerTool({
     name: "goal_step_done",
+    // Inert until a goal exists (pi 0.99 defaultActive); revealed by revealGoalTools().
+    defaultActive: false,
     label: "Finish goal step",
     promptSnippet: "Mark one goal step finished, with what verified it",
     description:
@@ -460,6 +533,8 @@ ${failure.slice(0, 200)}`,
 
   pi.registerTool({
     name: "goal_blocked",
+    // Inert until a goal exists (pi 0.99 defaultActive); revealed by revealGoalTools().
+    defaultActive: false,
     label: "Block goal",
     promptSnippet: "Record that the goal cannot proceed, and why",
     description:
@@ -483,6 +558,8 @@ ${failure.slice(0, 200)}`,
 
   pi.registerTool({
     name: "goal_wait",
+    // Inert until a goal exists (pi 0.99 defaultActive); revealed by revealGoalTools().
+    defaultActive: false,
     label: "Goal wait",
     promptSnippet: "Pause the goal until a named condition is met",
     description:
@@ -490,14 +567,36 @@ ${failure.slice(0, 200)}`,
       "that no further work can accelerate. The next user message automatically reactivates the goal.",
     parameters: Type.Object({
       reason: Type.String({ description: "What external event the goal is waiting for" }),
+      resume_after_ms: Type.Optional(
+        Type.Number({
+          description:
+            "Optional: wake the goal after this many milliseconds to re-check the event (CI, a deploy) without a human message. Clamped to at least 10 seconds; until then the next user message still reactivates it.",
+        }),
+      ),
     }),
-    async execute(_id, params: { reason: string }, _signal, _onUpdate, ctx) {
+    async execute(_id, params: { reason: string; resume_after_ms?: number }, _signal, _onUpdate, ctx) {
       const current = requireActiveGoal();
       if (!params.reason.trim()) throw new Error("goal_wait requires a non-empty reason.");
-      commit(ctx as UiContext, waitGoal(current, params.reason.trim(), Date.now()));
-      notify(ctx as UiContext, `Goal waiting: ${params.reason.trim()}`, "info");
+      const now = Date.now();
+      const delay = params.resume_after_ms === undefined ? null : clampResumeAfter(params.resume_after_ms);
+      const waiting = waitGoal(current, params.reason.trim(), now, delay === null ? undefined : now + delay);
+      commit(ctx as UiContext, waiting);
+      if (delay !== null) armWaitTimer(ctx as UiContext, waiting, delay);
+      notify(
+        ctx as UiContext,
+        delay === null ? `Goal waiting: ${params.reason.trim()}` : `Goal waiting: ${params.reason.trim()} (re-checks in ${Math.round(delay / 1000)}s)`,
+        "info",
+      );
       return {
-        content: [{ type: "text", text: "Goal is now waiting. Tell the user what it waits for." }],
+        content: [
+          {
+            type: "text",
+            text:
+              delay === null
+                ? "Goal is now waiting. Tell the user what it waits for."
+                : `Goal is now waiting and will wake itself in ${Math.round(delay / 1000)}s to re-check. Tell the user what it waits for.`,
+          },
+        ],
         details: { goal },
       };
     },
@@ -505,9 +604,15 @@ ${failure.slice(0, 200)}`,
 
   // ── Command ──────────────────────────────────────────────────────────
 
+  pi.on("session_shutdown", async () => {
+    clearWaitTimer();
+  });
+
   pi.registerCommand("goal", {
     description: "Pin a session goal: /goal <objective> | status | steps | pause | resume | clear | budget <Nk|N.Nm|off> | audit [on|off]",
     handler: async (args, ctx) => {
+      // Any hand on the goal disarms a pending deadline wake.
+      clearWaitTimer();
       const route = parseGoalRoute(args ?? "");
       switch (route.kind) {
         case "status": {
@@ -619,6 +724,7 @@ ${failure.slice(0, 200)}`,
           }
           const created = createGoal(route.objective, Date.now(), crypto.randomUUID());
           commit(ctx, created);
+          revealGoalTools();
           notify(ctx, `🎯 Goal set\n${statusBlock(created)}`, "info");
           queuePrompt(buildInitialPrompt(created));
           return;

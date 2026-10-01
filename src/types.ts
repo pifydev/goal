@@ -53,6 +53,8 @@ export interface Goal {
   pauseCause?: PauseCause;
   blockedReason?: string;
   waitingReason?: string;
+  /** When a timed goal_wait re-checks on its own (epoch ms); absent for an open-ended wait. */
+  waitUntil?: number;
   completionSummary?: string;
   completedAt?: number;
 }

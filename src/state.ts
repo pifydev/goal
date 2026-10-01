@@ -69,8 +69,20 @@ export function blockGoal(goal: Goal, reason: string, now: number): Goal {
   return { ...goal, status: "blocked", blockedReason: reason, updatedAt: now };
 }
 
-export function waitGoal(goal: Goal, reason: string, now: number): Goal {
-  return { ...goal, status: "waiting", waitingReason: reason, updatedAt: now };
+/** A timed re-check shorter than this is a polling loop, not a wait. */
+export const MIN_RESUME_AFTER_MS = 10_000;
+/** setTimeout's ceiling; a larger delay would fire immediately. */
+export const MAX_RESUME_AFTER_MS = 2_147_483_647;
+
+/** The delay a goal_wait may ask for, clamped to [10s, ~24.8 days]. */
+export function clampResumeAfter(ms: number): number {
+  if (!Number.isFinite(ms)) return MIN_RESUME_AFTER_MS;
+  return Math.min(MAX_RESUME_AFTER_MS, Math.max(MIN_RESUME_AFTER_MS, Math.round(ms)));
+}
+
+export function waitGoal(goal: Goal, reason: string, now: number, waitUntil?: number): Goal {
+  const { waitUntil: _dropped, ...rest } = goal;
+  return { ...rest, status: "waiting", waitingReason: reason, ...(waitUntil === undefined ? {} : { waitUntil }), updatedAt: now };
 }
 
 export function completeGoal(goal: Goal, summary: string, now: number): Goal {

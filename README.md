@@ -70,6 +70,12 @@ Counting those re-reads made the budget behave like a turn limit wearing a token
 
 **Wrap-up mode before the ceiling.** At 90% the agent is told the budget is nearly gone and asked to finish or cleanly back out of whatever is half-done and say what remains — and explicitly *not* to declare completion because it ran out. Every turn from there to the ceiling stays in wrap-up mode rather than starting new work, and the loop only stops after a wrap-up turn has run, so a budget freeze leaves the work somewhere a person can pick it up. Changing the budget — raising it, or setting a new one after `off` — re-arms the warning, so a fresh ceiling gets its own wrap-up turn at 90% instead of becoming a hard cut-off.
 
+## Tools appear when a goal does
+
+The five `goal_*` tools register inert (pi 0.99 `defaultActive: false`) and are added to the active tool set — merged into it, never replacing it, so a plan-mode or `--tools` restriction survives — the first time a live goal exists: on `/goal …`, and on session start or tree navigation when the branch replays an active, paused, blocked or waiting goal. A session that never uses `/goal` carries no goal tool schema in its requests. Once revealed they stay revealed for the session; hiding them again mid-run would churn the tool-schema cache.
+
+`goal_wait` can take `resume_after_ms`: the goal then wakes itself after that long (at least 10 seconds — shorter is a polling loop) to re-check the event it waits for, without a human message, through the same continuation path as any other turn. Your next message, any `/goal` command, a replacement goal or a session change disarms the timer; an open-ended `goal_wait` behaves as before.
+
 ## Safety
 
 - **Errors that repeating cannot fix stop the goal.** A goal drives its own turns, so an expired key, an empty balance, a context overflow, or a model the account cannot reach would otherwise be retried on every continuation, forever, at the cost of a request each time. Those pause the goal with the reason. Rate limits, overloads and dropped connections deliberately do not — riding those out is what the loop is for. The decision is made at the settled boundary, after pi's own compact-and-retry has had its chance: a context overflow pi recovers from does not pause the goal, and pi's transient retries are not counted against the no-progress limit.
