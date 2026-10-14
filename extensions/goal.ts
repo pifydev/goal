@@ -50,6 +50,7 @@ import {
   progressLine,
 } from "../src/steps.ts";
 import { classifyUnrecoverable, noteTurnProgress, turnErrorMessage } from "../src/safety.ts";
+import { ToolLoopRing } from "../src/tool-loop.ts";
 import {
   GOAL_STATE,
   accountUsage,
@@ -279,6 +280,8 @@ export default function goalExtension(pi: ExtensionAPI) {
     // finishing is not the person speaking. The wait timer survives them for
     // the same reason: it is the goal's own re-check, not the user's message.
     if (!isUserRun(event)) return;
+    // A person's message is a fresh start for the loop detector too.
+    toolLoop.reset();
     clearWaitTimer();
     if (!goal) return;
     if (goal.status === "blocked" || goal.status === "waiting") {
@@ -287,6 +290,22 @@ export default function goalExtension(pi: ExtensionAPI) {
     } else if (goal.status === "active") {
       commit(ctx, { ...resumeGoal(goal, Date.now()), status: "active" });
     }
+  });
+
+  // A stuck tool loop (the same tool + args over and over) is money a
+  // self-driving goal spends on a spin; the no-progress breaker misses it
+  // because each tool call counts as progress (ECC's loop detector).
+  const toolLoop = new ToolLoopRing();
+  pi.on("tool_call", async (event, ctx) => {
+    if (goal?.status !== "active") return;
+    const name = (event as { toolName?: unknown }).toolName;
+    // A goal_* tool is the agent reporting, not working — never a loop.
+    if (typeof name !== "string" || name.startsWith("goal_")) return;
+    const reason = toolLoop.push(name, (event as { input?: unknown }).input);
+    if (!reason) return;
+    toolLoop.reset();
+    commit(ctx, pauseGoal(goal, "no-progress", Date.now()));
+    notify(ctx, `Goal paused — ${reason}. It looks stuck; /goal resume to continue.`, "warning");
   });
 
   pi.on("agent_start", async (_event, ctx) => {
