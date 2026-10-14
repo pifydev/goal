@@ -33,6 +33,7 @@ import {
   type AuditVerdict,
 } from "../src/audit.ts";
 import { resolveChildModel } from "../src/child-model.ts";
+import { isUserRun } from "../src/run-origin.ts";
 import { footerText, statusBlock } from "../src/format.ts";
 import {
   buildContinuationPrompt,
@@ -267,10 +268,17 @@ export default function goalExtension(pi: ExtensionAPI) {
     updateFooter(ctx);
   });
 
-  pi.on("before_agent_start", async (_event, ctx) => {
-    // Fires only for real user prompts: start a fresh safety epoch, and
-    // auto-reactivate blocked/waiting goals (the user's input may be exactly
-    // what unblocks them — code-yeongyu semantics). Paused stays paused.
+  pi.on("before_agent_start", async (event, ctx) => {
+    // A person's prompt starts a fresh safety epoch and auto-reactivates a
+    // blocked/waiting goal (their input may be exactly what unblocks it —
+    // code-yeongyu semantics). Paused stays paused. pi 1.2.0 fires this for
+    // runs started by pi.sendMessage(…, { triggerTurn: true }) too — this
+    // goal's own continuation, a background job's result, a subagent's
+    // report — and those must change nothing: a continuation resetting the
+    // turn counter would put the 20-turn limit out of reach, and a job
+    // finishing is not the person speaking. The wait timer survives them for
+    // the same reason: it is the goal's own re-check, not the user's message.
+    if (!isUserRun(event)) return;
     clearWaitTimer();
     if (!goal) return;
     if (goal.status === "blocked" || goal.status === "waiting") {

@@ -46,7 +46,7 @@ The agent has no tool to create or resume a goal. It reports through evidence-ga
 | `goal_wait` | An external event — CI, a human, a deployment — that no further work can accelerate |
 | `goal_status` | Nothing; it just reads |
 
-Your next message automatically reactivates a blocked or waiting goal.
+Your next message automatically reactivates a blocked or waiting goal. Only your message: a run that another extension starts with a custom message — a background job's result, a subagent's report, the goal's own continuation — neither reactivates a goal nor resets its safety limits (pi 1.2.0 began announcing those runs through the same event a prompt uses; they are told apart by `messageType`).
 
 ## Ordered goals
 
